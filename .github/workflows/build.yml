@@ -15,24 +15,39 @@ jobs:
         with:
           distribution: temurin
           java-version: 17
-      # GitHub's ubuntu runners already ship the Android SDK (platform 34 + build-tools), so no setup-android step.
+      # GitHub's ubuntu runners already ship the Android SDK, so no setup-android step.
       - name: Accept Android SDK licenses
         run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.7"
+      # Use the project's own Gradle wrapper when it is committed, otherwise fall back to Gradle 8.7
       - name: Build debug APK
-        run: gradle assembleDebug --stacktrace
+        run: |
+          if [ -f gradlew ] && [ -f gradle/wrapper/gradle-wrapper.jar ]; then
+            chmod +x gradlew
+            ./gradlew assembleDebug --stacktrace
+          else
+            gradle assembleDebug --stacktrace
+          fi
       - name: Name the APK
-        run: cp app/build/outputs/apk/debug/app-debug.apk "Ludo-${{ github.ref_name }}.apk"
+        id: meta
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then TAG="$GITHUB_REF_NAME"; else TAG="build-$GITHUB_RUN_NUMBER"; fi
+          cp app/build/outputs/apk/debug/app-debug.apk "Ludo-$TAG.apk"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@v4
         with:
           name: ludo-debug-apk
-          path: Ludo-${{ github.ref_name }}.apk
-      # Pushing a tag like v1.0 publishes a GitHub Release with the APK attached
+          path: Ludo-${{ steps.meta.outputs.tag }}.apk
+      # Every push to main (and every v* tag) publishes a Release with the APK attached
       - name: Create release
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: Ludo-${{ github.ref_name }}.apk
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: Ludo ${{ steps.meta.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          files: Ludo-${{ steps.meta.outputs.tag }}.apk
           generate_release_notes: true
+          make_latest: true
