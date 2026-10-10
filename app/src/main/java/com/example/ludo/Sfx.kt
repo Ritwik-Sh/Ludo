@@ -43,6 +43,10 @@ class Fx(ctx: Context, private val sound: Boolean, private val vib: Boolean) {
         pop + sum
     }) else null
 
+    private val safeT = if (sound) mk(synth(0.3f) { t ->
+        sin(2 * PI * 1319 * t) * exp(-t * 16) * 0.35 + (if (t > 0.07) sin(2 * PI * 1760 * (t - 0.07)) * exp(-(t - 0.07) * 14) * 0.3 else 0.0)
+    }) else null
+
     private fun play(t: AudioTrack?) {
         if (t == null) return
         try { t.stop(); t.reloadStaticData(); t.play() } catch (e: Exception) { }
@@ -54,5 +58,6 @@ class Fx(ctx: Context, private val sound: Boolean, private val vib: Boolean) {
     fun hiss() = play(hiss)
     fun roll() = play(rollT)
     fun cheer() = play(cheerT)
-    fun release() { listOf(click, hiss, rollT, cheerT).forEach { try { it?.release() } catch (e: Exception) { } } }
+    fun safe() = play(safeT)
+    fun release() { listOf(click, hiss, rollT, cheerT, safeT).forEach { try { it?.release() } catch (e: Exception) { } } }
 }

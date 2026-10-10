@@ -108,6 +108,8 @@ class Prefs(sp: SharedPreferences) {
     val cancel6 = BoolP(sp, "cancel6", true)
     val indicator = IntP(sp, "indicator", 0)
     val pseudo = BoolP(sp, "pseudo", false)
+    val startOne = BoolP(sp, "startOne", false)
+    val indBoost = IntP(sp, "indBoost", 0)
 }
 
 class MainActivity : ComponentActivity() {
@@ -162,7 +164,7 @@ fun App() {
         Surface(Modifier.fillMaxSize(), color = pal.bg, contentColor = pal.text) {
             Box(Modifier.fillMaxSize().statusBarsPadding()) {
                 val g = game
-                if (g != null) GameScreen(g, pal, pf, { game = g.fresh() }) { game = null }
+                if (g != null) GameScreen(g, pal, pf, sysPal, { game = g.fresh() }) { game = null }
                 else Home(pal, pf, tab, mode, names, cpu, sysPal, { tab = it }, { mode = it }) { game = it }
             }
         }
@@ -192,7 +194,7 @@ fun NavIcon(kind: Int) {
 /** Floating, translucent pill navigation (56dp class height). The 5 / 6 tab opens the pill upward into a menu. */
 @Composable
 fun NavBar(
-    pal: Pal, tab: Int, mode: Int, menu: Boolean, onTab: (Int) -> Unit, onPick: (Int) -> Unit,
+    pal: Pal, tab: Int, mode: Int, menu: Int, onTab: (Int) -> Unit, onPick: (Int) -> Unit,
     layer: GraphicsLayer, offset: () -> Offset, onPill: (Offset) -> Unit
 ) {
     val blurLayer = rememberGraphicsLayer()
@@ -210,18 +212,19 @@ fun NavBar(
             }
     ) {
         Column(Modifier.animateContentSize(spring(dampingRatio = 0.8f, stiffness = 350f))) {
-            if (menu) Column(Modifier.padding(start = 6.dp, end = 6.dp, top = 6.dp)) {
-                listOf(2 to "5 Players", 3 to "6 Players").forEach { (md, l) ->
+            if (menu != 0) Column(Modifier.padding(start = 6.dp, end = 6.dp, top = 6.dp)) {
+                val items = if (menu == 1) listOf(4 to "2 Players", 5 to "3 Players", 0 to "4 Players") else listOf(2 to "5 Players", 3 to "6 Players")
+                items.forEach { (md, l) ->
                     Text(
                         l, fontWeight = FontWeight.Medium,
                         modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(26.dp))
-                            .background(if (mode == md && tab == 2) pal.text.copy(alpha = .12f) else Color.Transparent)
+                            .background(if (mode == md && tab == (if (menu == 1) 0 else 2)) pal.text.copy(alpha = .12f) else Color.Transparent)
                             .clickable { onPick(md) }.padding(horizontal = 20.dp, vertical = 12.dp)
                     )
                 }
             }
             Row(Modifier.padding(4.dp)) {
-                listOf("Classic", "Team Up", if (mode >= 2) "${mode + 3} Players" else "5 / 6", "Settings").forEachIndexed { i, label ->
+                listOf(when (mode) { 4 -> "2 Players"; 5 -> "3 Players"; else -> "Classic" }, "Team Up", if (mode == 2 || mode == 3) "${mode + 3} Players" else "5 / 6", "Settings").forEachIndexed { i, label ->
                     val sel = tab == i
                     val col = if (sel) pal.text else pal.sub
                     Column(
@@ -378,10 +381,11 @@ fun Home(
     pal: Pal, pf: Prefs, tab: Int, mode: Int, names: MutableList<String>, cpu: MutableList<Boolean>, sysPal: List<Color>,
     setTab: (Int) -> Unit, setMode: (Int) -> Unit, onStart: (Game) -> Unit
 ) {
-    var menu by remember { mutableStateOf(false) }
-    BackHandler(menu) { menu = false }
-    val n = if (mode < 2) 4 else mode + 3
+    var menu by remember { mutableIntStateOf(0) }
+    BackHandler(menu != 0) { menu = 0 }
+    val n = when (mode) { 2 -> 5; 3 -> 6; else -> 4 }
     val team = mode == 1
+    val activeSeats = when (mode) { 4 -> listOf(0, 2); 5 -> listOf(0, 1, 2); else -> (0 until n).toList() }
     val fieldColors = TextFieldDefaults.colors(
         focusedContainerColor = Color.Transparent, unfocusedContainerColor = Color.Transparent,
         focusedIndicatorColor = Color.Transparent, unfocusedIndicatorColor = Color.Transparent
@@ -424,57 +428,14 @@ fun Home(
         Column(Modifier.fillMaxSize().nestedScroll(conn).verticalScroll(rememberScrollState()).padding(horizontal = 12.dp)) {
             if (tab == 3) {
                 PullHeader("Settings", "", pal, pullPx, maxPull)
-                Label(pal, "Appearance")
-                Seg(pal, listOf("System", "Light", "Dark"), pf.theme.v) { pf.theme.v = it }
-                Label(pal, "Accent color")
-                ChipRow(pal, listOf("System") + ACCENTS.map { it.first }, pf.accent.v, { pf.accent.v = it }) { k, tint ->
-                    if (k == 0) PaletteSwatch(sysPal) else Swatch(Color(ACCENTS[k - 1].second), tint)
-                }
-                Label(pal, "Piece icon")
-                ChipRow(pal, ICONS, pf.icon.v, { pf.icon.v = it }) { k, tint ->
-                    if (k > 0) { Canvas(Modifier.size(18.dp)) { pieceIcon(k, center, size.width * .48f, tint) }; Spacer(Modifier.width(8.dp)) }
-                }
-                Label(pal, "Turn indicator")
-                Group(pal) {
-                    DropdownRow(pal, "Movable pieces", listOf("Pulsing circle", "Spinning dotted circle"), pf.indicator.v) { pf.indicator.v = it }
-                }
-                Label(pal, "Rules")
-                Group(pal) {
-                    SwitchRow(pal, "Unlock pieces with 1 and 6", "Off: only a 6 unlocks a piece", pf.unlock1.v) { pf.unlock1.v = it }
-                    Div(pal)
-                    SwitchRow(pal, "Cancel 3rd 6 in a row", "Rolling three 6s in a row cancels the last move and passes your turn. When off, the dice never lands a third 6 in a row, so no turn is lost.", pf.cancel6.v) { pf.cancel6.v = it }
-                    Div(pal)
-                    SwitchRow(pal, "Pseudo-random dice", "Draws from a shuffled set of rolls, so long streaks and long droughts of the same number are rarer. Off: every roll is truly random.", pf.pseudo.v) { pf.pseudo.v = it }
-                    Div(pal)
-                    SwitchRow(pal, "Same-color stack is safe", "Classic, 5 and 6 players", pf.stack.v) { pf.stack.v = it }
-                }
-                Label(pal, "First player")
-                ChipRow(pal, listOf("Random", "Red", "Green", "Yellow", "Blue"), pf.first.v + 1, { pf.first.v = it - 1 }) { k, tint ->
-                    if (k > 0) Swatch(pal.p[k - 1], tint)
-                }
-                Label(pal, "Piece speed")
-                Seg(pal, listOf("Slow", "Normal", "Fast"), pf.speed.v) { pf.speed.v = it }
-                Label(pal, "Gameplay")
-                Group(pal) {
-                    SwitchRow(pal, "Auto roll dice", "", pf.autoRoll.v) { pf.autoRoll.v = it }
-                    Div(pal)
-                    SwitchRow(pal, "Auto-move out of home", "When only unlocking moves are possible", pf.autoOut.v) { pf.autoOut.v = it }
-                    Div(pal)
-                    SwitchRow(pal, "Auto-move when only 1 option", "", pf.autoSingle.v) { pf.autoSingle.v = it }
-                }
-                Label(pal, "Feedback")
-                Group(pal) {
-                    SwitchRow(pal, "Sound effects", "", pf.sound.v) { pf.sound.v = it }
-                    Div(pal)
-                    SwitchRow(pal, "Vibration", "", pf.vib.v) { pf.vib.v = it }
-                }
+                SettingsList(pal, pf, sysPal)
                 Spacer(Modifier.height(140.dp))
             } else {
                 PullHeader(
-                    listOf("Classic", "Team Up", "5 Players", "6 Players")[mode],
-                    listOf("Every player for themselves", "2v2", "Five-arm ring board", "Six-arm ring board")[mode], pal, pullPx, maxPull
+                    listOf("Classic", "Team Up", "5 Players", "6 Players", "2 Players", "3 Players")[mode],
+                    listOf("Every player for themselves", "2v2", "Five-arm ring board", "Six-arm ring board", "Classic board, two players", "Classic board, three players")[mode], pal, pullPx, maxPull
                 )
-                val groups = if (team) listOf(listOf(0, 2) to "Team 1", listOf(1, 3) to "Team 2") else listOf((0 until n).toList() to "Players")
+                val groups = if (team) listOf(listOf(0, 2) to "Team 1", listOf(1, 3) to "Team 2") else listOf(activeSeats to "Players")
                 groups.forEach { (seats, label) ->
                     Label(pal, label)
                     Group(pal) {
@@ -484,7 +445,7 @@ fun Home(
                                 Box(Modifier.size(20.dp).clip(CircleShape).background(pal.p[i]))
                                 TextField(
                                     value = names[i], onValueChange = { names[i] = it }, singleLine = true,
-                                    placeholder = { Text("Player ${i + 1}") }, colors = fieldColors, modifier = Modifier.weight(1f)
+                                    placeholder = { Text("Player ${activeSeats.indexOf(i).let { j -> if (j >= 0) j + 1 else i + 1 }}") }, colors = fieldColors, modifier = Modifier.weight(1f)
                                 )
                                 Text("CPU", color = pal.sub, fontSize = 13.sp)
                                 Spacer(Modifier.width(6.dp))
@@ -500,17 +461,21 @@ fun Home(
         Column(Modifier.align(Alignment.BottomCenter).navigationBarsPadding()) {
             if (tab != 3) Button(
                 onClick = {
-                    onStart(Game(n, team, cpu.take(n), List(n) { names[it].trim().ifEmpty { "Player ${it + 1}" } }, pf.stack.v,
-                        pf.unlock1.v, pf.first.v, pf.autoOut.v, pf.autoSingle.v, pf.cancel6.v, pf.pseudo.v))
+                    onStart(Game(n, team, cpu.take(n), List(n) { s -> names[s].trim().ifEmpty { "Player ${activeSeats.indexOf(s).let { j -> if (j >= 0) j + 1 else s + 1 }}" } }, pf.stack.v,
+                        pf.unlock1.v, pf.first.v, pf.autoOut.v, pf.autoSingle.v, pf.cancel6.v, pf.pseudo.v, pf.startOne.v, activeSeats))
                 },
                 shape = RoundedCornerShape(50), modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp).height(52.dp)
             ) { Text("Start game") }
             NavBar(pal, tab, mode, menu,
                 onTab = { i ->
-                    if (i == 2) { menu = !menu; if (tab != 2 && mode < 2) setMode(2); setTab(2) }
-                    else { menu = false; setTab(i); if (i < 2) setMode(i) }
+                    when (i) {
+                        0 -> { menu = if (menu == 1) 0 else 1; if (mode != 0 && mode != 4 && mode != 5) setMode(0); setTab(0) }
+                        1 -> { menu = 0; setMode(1); setTab(1) }
+                        2 -> { menu = if (menu == 2) 0 else 2; if (mode != 2 && mode != 3) setMode(2); setTab(2) }
+                        else -> { menu = 0; setTab(3) }
+                    }
                 },
-                onPick = { m -> setMode(m); setTab(2); menu = false },
+                onPick = { m -> setMode(m); setTab(if (m == 2 || m == 3) 2 else 0); menu = 0 },
                 layer = contentLayer, offset = { pillPos - contentPos }, onPill = { pillPos = it })
         }
     }
@@ -660,20 +625,22 @@ fun PlayerDice(g: Game, p: Int, pal: Pal, pulse: Float, side: Int, enabled: Bool
 fun DiceRow(l: List<Int>, g: Game, pal: Pal, pulse: Float, enabled: Boolean, fx: Fx, roll: () -> Unit) {
     Row(
         Modifier.fillMaxWidth().padding(horizontal = 8.dp),
-        horizontalArrangement = if (l.size >= 3) Arrangement.SpaceEvenly else Arrangement.SpaceBetween
+        horizontalArrangement = if (l.size >= 3) Arrangement.SpaceEvenly
+        else if (l.size == 1 && g.b.baseCenter(l[0]).first > 7.5f) Arrangement.End else Arrangement.SpaceBetween
     ) {
-        l.forEachIndexed { k, p -> PlayerDice(g, p, pal, pulse, if (l.size >= 3) 2 else k, enabled, fx) { roll() } }
+        l.forEachIndexed { k, p -> PlayerDice(g, p, pal, pulse, if (l.size >= 3) 2 else if (l.size == 1 && g.b.baseCenter(p).first > 7.5f) 1 else k, enabled, fx) { roll() } }
     }
 }
 
 @Composable
-fun GameScreen(g: Game, pal: Pal, pf: Prefs, onRestart: () -> Unit, onQuit: () -> Unit) {
+fun GameScreen(g: Game, pal: Pal, pf: Prefs, sysPal: List<Color>, onRestart: () -> Unit, onQuit: () -> Unit) {
     var confirm by remember { mutableStateOf(false) }
     var paused by remember { mutableStateOf(false) }
+    var settingsOpen by remember { mutableStateOf(false) }
     BackHandler { confirm = true }
     val ctx = LocalContext.current
     val haptic = LocalHapticFeedback.current
-    val fx = remember(g) { Fx(ctx, pf.sound.v, pf.vib.v) }
+    val fx = remember(g, pf.sound.v, pf.vib.v) { Fx(ctx, pf.sound.v, pf.vib.v) }
     DisposableEffect(fx) { onDispose { fx.release() } }
     val b = g.b
     val total = 4 * g.n
@@ -692,7 +659,7 @@ fun GameScreen(g: Game, pal: Pal, pf: Prefs, onRestart: () -> Unit, onQuit: () -
         if (!g.rolled) g.roll() else g.move(g.aiPick())
     }
     // Moving steps on every square; a captured piece waits for the capturer, hisses, then glides back along its path.
-    val shown = remember(g) { List(total) { Animatable(-1f) } }
+    val shown = remember(g) { List(total) { Animatable(g.pos[it].toFloat()) } }
     shown.forEachIndexed { idx, a ->
         LaunchedEffect(g.pos[idx]) {
             val t = g.pos[idx].toFloat()
@@ -711,6 +678,7 @@ fun GameScreen(g: Game, pal: Pal, pf: Prefs, onRestart: () -> Unit, onQuit: () -
                         fx.step(); delay(40); s++
                     }
                     if (t == b.home.toFloat()) { burst++; fx.cheer() }
+                    else if (t <= b.last.toFloat() && (b.start(idx / 4) + t.toInt()) % b.tl in b.safe) fx.safe()
                 } else a.snapTo(t)
             } finally { busy-- }
         }
@@ -722,8 +690,8 @@ fun GameScreen(g: Game, pal: Pal, pf: Prefs, onRestart: () -> Unit, onQuit: () -
     val human = !g.cpu[g.turn] && !g.over
     val mv = if (human && g.rolled) g.moves() else emptyList()
     val roll = { haptic.performHapticFeedback(HapticFeedbackType.LongPress); g.roll() }
-    val tops = (0 until g.n).filter { b.baseCenter(it).second < 7.5f }.sortedBy { b.baseCenter(it).first }
-    val bots = (0 until g.n).filter { it !in tops }.sortedBy { b.baseCenter(it).first }
+    val tops = g.active.filter { b.baseCenter(it).second < 7.5f }.sortedBy { b.baseCenter(it).first }
+    val bots = g.active.filter { it !in tops }.sortedBy { b.baseCenter(it).first }
 
     Box(Modifier.fillMaxSize()) {
     BurstLayer(pal, burst, burstAnim)
@@ -760,6 +728,7 @@ fun GameScreen(g: Game, pal: Pal, pf: Prefs, onRestart: () -> Unit, onQuit: () -
         ) {
             val c = size.width / 15f
             val line = pal.sub.copy(alpha = 0.35f)
+            fun pc(o: Int) = if (o in g.active) pal.p[o] else pal.p[o].copy(alpha = 0.2f)
             fun P(p: Pair<Float, Float>) = Offset(p.first * c, p.second * c)
             if (!b.radial) {
                 fun cell(x: Int, y: Int, fill: Color) {
@@ -769,20 +738,20 @@ fun GameScreen(g: Game, pal: Pal, pf: Prefs, onRestart: () -> Unit, onQuit: () -
                 for (o in 0..3) {
                     val x0 = if (o == 1 || o == 2) 9 else 0
                     val y0 = if (o >= 2) 9 else 0
-                    drawRect(pal.p[o], Offset(x0 * c, y0 * c), Size(6 * c, 6 * c))
+                    drawRect(pc(o), Offset(x0 * c, y0 * c), Size(6 * c, 6 * c))
                     drawRoundRect(pal.surf, Offset((x0 + 1) * c, (y0 + 1) * c), Size(4 * c, 4 * c), CornerRadius(c * 0.6f))
-                    for (i in 0..3) drawCircle(pal.p[o].copy(alpha = 0.35f), c * 0.42f, P(b.base(o, i)))
+                    for (i in 0..3) drawCircle(pc(o).copy(alpha = 0.35f), c * 0.42f, P(b.base(o, i)))
                 }
                 TRACK.forEach { (x, y) -> cell(x, y, pal.surf) }
-                for (o in 0..3) for (s in 0..4) { val (x, y) = homeCell(o, s); cell(x, y, pal.p[o]) }
+                for (o in 0..3) for (s in 0..4) { val (x, y) = homeCell(o, s); cell(x, y, pc(o)) }
                 TRACK.forEachIndexed { k, (x, y) ->
                     val st = if (k % 13 == 0) k / 13 else -1
-                    if (st >= 0) { cell(x, y, pal.p[st]); star(Offset((x + .5f) * c, (y + .5f) * c), c * 0.34f, Color.White) }
+                    if (st >= 0) { cell(x, y, pc(st)); star(Offset((x + .5f) * c, (y + .5f) * c), c * 0.34f, Color.White) }
                     else if (k in b.safe) star(Offset((x + .5f) * c, (y + .5f) * c), c * 0.34f, pal.sub)
                 }
                 val m = 7.5f * c
                 fun tri(o: Int, a: Offset, bb: Offset) = drawPath(
-                    Path().apply { moveTo(a.x, a.y); lineTo(bb.x, bb.y); lineTo(m, m); close() }, pal.p[o]
+                    Path().apply { moveTo(a.x, a.y); lineTo(bb.x, bb.y); lineTo(m, m); close() }, pc(o)
                 )
                 tri(0, Offset(6 * c, 6 * c), Offset(6 * c, 9 * c))
                 tri(1, Offset(6 * c, 6 * c), Offset(9 * c, 6 * c))
@@ -821,6 +790,7 @@ fun GameScreen(g: Game, pal: Pal, pf: Prefs, onRestart: () -> Unit, onQuit: () -
             }
             for (idx in (0 until total).sortedBy { abs(shown[it].value - g.pos[it]) > 0.01f }) {
                 val o = idx / 4
+                if (o !in g.active) continue
                 val q = shown[idx].value
                 val (x, y) = b.xy(o, idx % 4, q)
                 val hop = 1f + .3f * sin(PI * (q - floor(q))).toFloat()
@@ -835,12 +805,15 @@ fun GameScreen(g: Game, pal: Pal, pf: Prefs, onRestart: () -> Unit, onQuit: () -
                 if (icon == 0) drawCircle(Color.White.copy(alpha = 0.4f), r * 0.4f, ctr - Offset(r * 0.25f, r * 0.25f))
                 else pieceIcon(icon, ctr, r * 0.58f, Color.White)
                 if (idx in mv) {
-                    if (pf.indicator.v == 0) drawCircle(pal.text, rr * pulse, ctr, style = Stroke(c * 0.07f))
+                    val bo = pf.indBoost.v
+                    val sw = c * 0.07f * (1f + 0.7f * bo)
+                    if (bo > 0) drawCircle(pal.text.copy(alpha = 0.16f * bo), rr * 1.5f, ctr)
+                    if (pf.indicator.v == 0) drawCircle(pal.text, rr * pulse, ctr, style = Stroke(sw))
                     else {
                         val rad = rr * 1.3f
                         val gap = (2 * PI * rad / 12).toFloat()
                         rotate(spin, ctr) {
-                            drawCircle(pal.text, rad, ctr, style = Stroke(c * 0.09f, cap = StrokeCap.Round,
+                            drawCircle(pal.text, rad, ctr, style = Stroke(sw * 1.3f, cap = StrokeCap.Round,
                                 pathEffect = PathEffect.dashPathEffect(floatArrayOf(0.01f, gap))))
                         }
                     }
@@ -852,11 +825,14 @@ fun GameScreen(g: Game, pal: Pal, pf: Prefs, onRestart: () -> Unit, onQuit: () -
     }
     }
     val red = Color(0xFFE5484D)
-    if (paused && !confirm) OneDialog(pal, "Paused", "", listOf(
+    val modeLabel = if (g.team) "Team Up 2v2" else when (g.n) { 5 -> "5 players"; 6 -> "6 players"; else -> "Classic · ${g.active.size} players" }
+    if (paused && !confirm && !settingsOpen) OneDialog(pal, "Paused", "", listOf(
         DlgAction("Resume", pal.hi, true) { paused = false },
+        DlgAction("Settings", pal.text) { settingsOpen = true },
         DlgAction("Restart game", pal.text) { onRestart() },
         DlgAction("Quit game", red) { confirm = true }
-    )) { paused = false }
+    ), extra = { GameDetails(g, pal, modeLabel) }) { paused = false }
+    if (settingsOpen) SettingsSheet(pal, pf, sysPal) { settingsOpen = false }
     if (confirm) OneDialog(pal, "Quit game?", "Your current game will be lost.", listOf(
         DlgAction("Cancel", pal.text) { confirm = false },
         DlgAction("Quit", red, true) { confirm = false; onQuit() }
@@ -895,7 +871,7 @@ fun Confetti(pal: Pal) {
 
 /** One UI style dialog: bottom-anchored rounded card, centred text, pill buttons (side by side, or stacked when 3+). */
 @Composable
-fun OneDialog(pal: Pal, title: String, text: String, actions: List<DlgAction>, confetti: Boolean = false, onDismiss: (() -> Unit)?) {
+fun OneDialog(pal: Pal, title: String, text: String, actions: List<DlgAction>, extra: (@Composable () -> Unit)? = null, confetti: Boolean = false, onDismiss: (() -> Unit)?) {
     Dialog(
         onDismissRequest = { onDismiss?.invoke() },
         properties = DialogProperties(usePlatformDefaultWidth = false, dismissOnBackPress = onDismiss != null, dismissOnClickOutside = false)
@@ -914,14 +890,18 @@ fun OneDialog(pal: Pal, title: String, text: String, actions: List<DlgAction>, c
                 ) {
                     Text(title, fontSize = 20.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center, color = pal.text)
                     if (text.isNotEmpty()) Text(text, color = pal.sub, textAlign = TextAlign.Center, modifier = Modifier.padding(top = 12.dp))
+                    extra?.invoke()
                     Spacer(Modifier.height(24.dp))
                     val btn: @Composable (DlgAction, Modifier) -> Unit = { a, mod ->
                         Box(mod.height(52.dp).clip(CircleShape).background(pal.bg).clickable(onClick = a.onClick), contentAlignment = Alignment.Center) {
                             Text(a.label, fontWeight = if (a.bold) FontWeight.Bold else FontWeight.Medium, color = a.color)
                         }
                     }
-                    if (actions.size <= 2) Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) { actions.forEach { btn(it, Modifier.weight(1f)) } }
-                    else Column(verticalArrangement = Arrangement.spacedBy(10.dp)) { actions.forEach { btn(it, Modifier.fillMaxWidth()) } }
+                    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        actions.chunked(if (actions.size == 4 || actions.size <= 2) 2 else 1).forEach { r ->
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) { r.forEach { btn(it, Modifier.weight(1f)) } }
+                        }
+                    }
                 }
             }
         }
@@ -957,6 +937,105 @@ fun BurstLayer(pal: Pal, key: Int, anim: Animatable<Float, AnimationVector1D>) {
             val w = s.w.dp.toPx(); val h = s.h.dp.toPx()
             rotate(s.spin * t * 360f, Offset(x, y)) {
                 drawRect(pal.p[s.ci].copy(alpha = alpha), Offset(x - w / 2, y - h / 2), Size(w, h))
+            }
+        }
+    }
+}
+
+@Composable
+fun SettingsList(pal: Pal, pf: Prefs, sysPal: List<Color>) {
+                Label(pal, "Appearance")
+                Seg(pal, listOf("System", "Light", "Dark"), pf.theme.v) { pf.theme.v = it }
+                Label(pal, "Accent color")
+                ChipRow(pal, listOf("System") + ACCENTS.map { it.first }, pf.accent.v, { pf.accent.v = it }) { k, tint ->
+                    if (k == 0) PaletteSwatch(sysPal) else Swatch(Color(ACCENTS[k - 1].second), tint)
+                }
+                Label(pal, "Piece icon")
+                ChipRow(pal, ICONS, pf.icon.v, { pf.icon.v = it }) { k, tint ->
+                    if (k > 0) { Canvas(Modifier.size(18.dp)) { pieceIcon(k, center, size.width * .48f, tint) }; Spacer(Modifier.width(8.dp)) }
+                }
+                Label(pal, "Turn indicator")
+                Group(pal) {
+                    DropdownRow(pal, "Movable pieces", listOf("Pulsing circle", "Spinning dotted circle"), pf.indicator.v) { pf.indicator.v = it }
+                }
+                Label(pal, "Indicator brightness")
+                Seg(pal, listOf("Normal", "Bright", "Intense"), pf.indBoost.v) { pf.indBoost.v = it }
+                Label(pal, "Rules")
+                Group(pal) {
+                    SwitchRow(pal, "Unlock pieces with 1 and 6", "Off: only a 6 unlocks a piece", pf.unlock1.v) { pf.unlock1.v = it }
+                    Div(pal)
+                    SwitchRow(pal, "Start with 1 piece unlocked", "Each player begins with one piece already out on its start square.", pf.startOne.v) { pf.startOne.v = it }
+                    Div(pal)
+                    SwitchRow(pal, "Cancel 3rd 6 in a row", "Rolling three 6s in a row cancels the last move and passes your turn. When off, the dice never lands a third 6 in a row, so no turn is lost.", pf.cancel6.v) { pf.cancel6.v = it }
+                    Div(pal)
+                    SwitchRow(pal, "Pseudo-random dice", "Draws from a shuffled set of rolls, so streaks and droughts are rarer. When a roll could capture an opponent's piece, a capturing number comes up 55% of the time. Off: every roll is truly random.", pf.pseudo.v) { pf.pseudo.v = it }
+                    Div(pal)
+                    SwitchRow(pal, "Same-color stack is safe", "A stack of 2+ is safe until more opposing pieces gather on its square than the stack holds; then the whole stack is captured. Classic, 5 and 6 players.", pf.stack.v) { pf.stack.v = it }
+                }
+                Label(pal, "First player")
+                ChipRow(pal, listOf("Random", "Red", "Green", "Yellow", "Blue"), pf.first.v + 1, { pf.first.v = it - 1 }) { k, tint ->
+                    if (k > 0) Swatch(pal.p[k - 1], tint)
+                }
+                Label(pal, "Piece speed")
+                Seg(pal, listOf("Slow", "Normal", "Fast"), pf.speed.v) { pf.speed.v = it }
+                Label(pal, "Gameplay")
+                Group(pal) {
+                    SwitchRow(pal, "Auto roll dice", "", pf.autoRoll.v) { pf.autoRoll.v = it }
+                    Div(pal)
+                    SwitchRow(pal, "Auto-move out of home", "When only unlocking moves are possible", pf.autoOut.v) { pf.autoOut.v = it }
+                    Div(pal)
+                    SwitchRow(pal, "Auto-move when only 1 option", "", pf.autoSingle.v) { pf.autoSingle.v = it }
+                }
+                Label(pal, "Feedback")
+                Group(pal) {
+                    SwitchRow(pal, "Sound effects", "", pf.sound.v) { pf.sound.v = it }
+                    Div(pal)
+                    SwitchRow(pal, "Vibration", "", pf.vib.v) { pf.vib.v = it }
+                }
+}
+
+/** Full-screen settings opened from the pause menu. */
+@Composable
+fun SettingsSheet(pal: Pal, pf: Prefs, sysPal: List<Color>, onClose: () -> Unit) {
+    Dialog(onDismissRequest = onClose, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        Column(Modifier.fillMaxSize().background(pal.bg)) {
+            Row(Modifier.padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                Box(Modifier.size(44.dp).clip(CircleShape).background(pal.surf).clickable(onClick = onClose), contentAlignment = Alignment.Center) {
+                    Canvas(Modifier.size(18.dp)) {
+                        drawPath(Path().apply {
+                            moveTo(size.width * .65f, size.height * .1f); lineTo(size.width * .3f, size.height * .5f); lineTo(size.width * .65f, size.height * .9f)
+                        }, pal.text, style = Stroke(size.width * .12f, cap = StrokeCap.Round, join = StrokeJoin.Round))
+                    }
+                }
+                Spacer(Modifier.width(12.dp))
+                Text("Settings", fontSize = 26.sp, fontWeight = FontWeight.Bold, color = pal.hi)
+            }
+            Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = 12.dp)) {
+                Text("Rule changes apply from the next game.", color = pal.sub, fontSize = 13.sp, modifier = Modifier.padding(start = 8.dp))
+                SettingsList(pal, pf, sysPal)
+                Spacer(Modifier.height(32.dp))
+            }
+        }
+    }
+}
+
+@Composable
+fun GameDetails(g: Game, pal: Pal, mode: String) {
+    Column(Modifier.fillMaxWidth().padding(top = 16.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(mode, color = pal.hi, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f))
+            Text("${g.rolls.sum()} rolls · ${g.kills.sum()} captures", color = pal.sub, fontSize = 13.sp)
+        }
+        Spacer(Modifier.height(6.dp))
+        g.active.forEach { p ->
+            val home = (0..3).count { g.pos[p * 4 + it] == g.b.home }
+            val base = (0..3).count { g.pos[p * 4 + it] == -1 }
+            Row(Modifier.fillMaxWidth().padding(vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
+                Box(Modifier.size(12.dp).clip(CircleShape).background(pal.p[p]))
+                Spacer(Modifier.width(8.dp))
+                Text(g.names[p] + if (g.turn == p) "  (turn)" else "", color = pal.text,
+                    fontWeight = if (g.turn == p) FontWeight.Bold else FontWeight.Normal, maxLines = 1, modifier = Modifier.weight(1f))
+                Text("$home home · ${4 - home - base} out · $base in base", color = pal.sub, fontSize = 13.sp)
             }
         }
     }

@@ -55,10 +55,12 @@ class Board(val n: Int) {
 }
 
 class Game(val n: Int, val team: Boolean, val cpu: List<Boolean>, val names: List<String>, val stackSafe: Boolean,
-           val unlock1: Boolean, val first: Int, val autoOut: Boolean, val autoSingle: Boolean, val cancel6: Boolean, val pseudo: Boolean) {
+           val unlock1: Boolean, val first: Int, val autoOut: Boolean, val autoSingle: Boolean, val cancel6: Boolean, val pseudo: Boolean,
+           val startOne: Boolean = false, val active: List<Int> = (0 until n).toList()) {
     val b = Board(n)
     val pos = mutableStateListOf<Int>().apply { repeat(4 * n) { add(-1) } }
-    var turn by mutableStateOf(if (first in 0 until n) first else Random.nextInt(n)); private set
+    init { if (startOne) for (o in active) pos[o * 4] = 0 }
+    var turn by mutableStateOf(if (first in active) first else active[Random.nextInt(active.size)]); private set
     var dice by mutableStateOf(0); private set
     var rolled by mutableStateOf(false); private set
     var tick by mutableStateOf(0); private set
@@ -68,12 +70,13 @@ class Game(val n: Int, val team: Boolean, val cpu: List<Boolean>, val names: Lis
     val order = mutableStateListOf<Int>()
     val lastRoll = mutableStateListOf<Int>().apply { repeat(n) { add(Random.nextInt(1, 7)) } }
     val rolls = mutableStateListOf<Int>().apply { repeat(n) { add(0) } }
+    val kills = mutableStateListOf<Int>().apply { repeat(n) { add(0) } }
     private var sixes = 0
 
     private fun teamOf(o: Int) = if (team) o % 2 else o
     private fun partner(o: Int) = (o + 2) % 4
     fun done(o: Int) = (0..3).all { pos[o * 4 + it] == b.home }
-    private fun canAct(p: Int) = if (team) !(done(p) && done(partner(p))) else !done(p)
+    private fun canAct(p: Int) = p in active && (if (team) !(done(p) && done(partner(p))) else !done(p))
 
     /** Whose tokens the current player moves (partner's once all own tokens are home in Team Up). */
     fun mover(): Int = if (team && done(turn) && !done(partner(turn))) partner(turn) else turn
@@ -99,25 +102,46 @@ class Game(val n: Int, val team: Boolean, val cpu: List<Boolean>, val names: Lis
         // Team Up: a defending stack of N falls if the arriving team has >= N pieces there (incl. the mover).
         val mine = 1 + (0 until 4 * n).count { teamOf(it / 4) == teamOf(o) && on(it / 4, it) }
         return hit.groupBy { teamOf(it / 4) }.values
-            .filter { if (team) mine >= it.size else (it.size < 2 || !stackSafe) }.flatten()
+            .filter { if (team) mine >= it.size else (it.size < 2 || !stackSafe || mine > it.size) }.flatten()
     }
 
     private val bags = Array(n) { mutableListOf<Int>() }
 
-    /** True random, or "balanced" mode: draw without replacement from a shuffled bag holding every face twice. */
-    private fun draw(p: Int, no6: Boolean): Int {
-        if (!pseudo) { var r = Random.nextInt(1, 7); if (no6 && r == 6) r = Random.nextInt(1, 6); return r }
-        val bag = bags[p]
-        if (bag.isEmpty()) { repeat(2) { bag.addAll(1..6) }; bag.shuffle() }
-        var i = bag.lastIndex
-        if (no6 && bag[i] == 6) {
-            val j = bag.indexOfLast { it != 6 }
-            if (j >= 0) i = j else return Random.nextInt(1, 6)
+    /** Dice values that would let the current mover capture an opponent piece. */
+    private fun captureValues(): Set<Int> {
+        val o = mover()
+        val res = mutableSetOf<Int>()
+        for (v in 1..6) for (i in o * 4 until o * 4 + 4) {
+            val p = pos[i]
+            val np = if (p == -1) (if (v == 6 || (unlock1 && v == 1)) 0 else -2) else if (p + v <= b.home) p + v else -2
+            if (np >= 0 && victims(o, np).isNotEmpty()) res += v
         }
-        return bag.removeAt(i)
+        return res
     }
 
-    fun fresh() = Game(n, team, cpu, names, stackSafe, unlock1, first, autoOut, autoSingle, cancel6, pseudo)
+    /**
+     * True random, or "balanced" mode: a shuffled bag holding every face twice, plus a capture boost:
+     * when a capture is possible, a capturing number comes up 55% of the time.
+     */
+    private fun draw(p: Int, no6: Boolean): Int {
+        val allowed = (1..6).filter { !(no6 && it == 6) }
+        if (!pseudo) return allowed.random()
+        val bag = bags[p]
+        fun fromBag(ok: (Int) -> Boolean): Int? {
+            if (bag.isEmpty()) { repeat(2) { bag.addAll(1..6) }; bag.shuffle() }
+            val i = bag.indexOfLast(ok)
+            return if (i >= 0) bag.removeAt(i) else null
+        }
+        val cap = captureValues().filter { it in allowed }
+        if (cap.isNotEmpty()) {
+            if (Random.nextFloat() < 0.55f) return cap.random()
+            val rest = allowed.filter { it !in cap }
+            return if (rest.isNotEmpty()) (fromBag { it in rest } ?: rest.random()) else cap.random()
+        }
+        return fromBag { it in allowed } ?: allowed.random()
+    }
+
+    fun fresh() = Game(n, team, cpu, names, stackSafe, unlock1, first, autoOut, autoSingle, cancel6, pseudo, startOne, active)
 
     fun roll() {
         if (rolled || over) return
@@ -140,6 +164,7 @@ class Game(val n: Int, val team: Boolean, val cpu: List<Boolean>, val names: Lis
         val np = dest(idx)
         val v = victims(o, np)
         v.forEach { pos[it] = -1 }
+        kills[o] = kills[o] + v.size
         pos[idx] = np
         val bonus = dice == 6 || v.isNotEmpty() || np == b.home
         if (done(o) && o !in order) order.add(o)
@@ -155,8 +180,8 @@ class Game(val n: Int, val team: Boolean, val cpu: List<Boolean>, val names: Lis
                 if (t !in order) order.add(t)
                 return true
             }
-        } else if (order.size >= n - 1) {
-            (0 until n).filter { it !in order }.forEach { order.add(it) }
+        } else if (order.size >= active.size - 1) {
+            active.filter { it !in order }.forEach { order.add(it) }
             over = true; title = "${names[order[0]]} wins"
             return true
         }
