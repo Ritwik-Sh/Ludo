@@ -101,7 +101,7 @@ class BoolP(private val sp: SharedPreferences, private val k: String, d: Boolean
 }
 class Prefs(sp: SharedPreferences) {
     val theme = IntP(sp, "theme", 0); val icon = IntP(sp, "icon", 1); val accent = IntP(sp, "accent", 0)
-    val speed = IntP(sp, "speed", 1); val first = IntP(sp, "first", -1)
+    val speedPct = IntP(sp, "speedPct", 55); val first = IntP(sp, "first", -1)
     val stack = BoolP(sp, "stack", true); val unlock1 = BoolP(sp, "unlock1", false)
     val autoRoll = BoolP(sp, "autoRoll", false); val autoOut = BoolP(sp, "autoOut", false)
     val autoSingle = BoolP(sp, "autoSingle", true); val sound = BoolP(sp, "sound", true); val vib = BoolP(sp, "vib", true)
@@ -109,7 +109,7 @@ class Prefs(sp: SharedPreferences) {
     val indicator = IntP(sp, "indicator", 0)
     val pseudo = BoolP(sp, "pseudo", false)
     val startOne = BoolP(sp, "startOne", false)
-    val indBoost = IntP(sp, "indBoost", 0)
+    val indLevel = IntP(sp, "indLevel", 0)
 }
 
 class MainActivity : ComponentActivity() {
@@ -644,7 +644,7 @@ fun GameScreen(g: Game, pal: Pal, pf: Prefs, sysPal: List<Color>, onRestart: () 
     DisposableEffect(fx) { onDispose { fx.release() } }
     val b = g.b
     val total = 4 * g.n
-    val stepMs = listOf(380, 250, 150)[pf.speed.v]
+    val stepMs = (450 - 3.5f * pf.speedPct.v).toInt()
     var busy by remember { mutableIntStateOf(0) }
     var burst by remember { mutableIntStateOf(0) }
     val burstAnim = remember { Animatable(0f) }
@@ -782,19 +782,25 @@ fun GameScreen(g: Game, pal: Pal, pf: Prefs, sysPal: List<Color>, onRestart: () 
                     drawPath(pa, pal.p[o])
                 }
             }
-            val seen = HashMap<Pair<Float, Float>, Int>()
-            val slot = IntArray(total)
+            val mvr = g.mover()
+            val groups = HashMap<Pair<Float, Float>, MutableList<Int>>()
             for (i in 0 until total) {
-                val k = b.xy(i / 4, i % 4, g.pos[i].toFloat())
-                slot[i] = seen.getOrDefault(k, 0); seen[k] = slot[i] + 1
+                if (i / 4 !in g.active) continue
+                groups.getOrPut(b.xy(i / 4, i % 4, g.pos[i].toFloat())) { mutableListOf() }.add(i)
             }
-            for (idx in (0 until total).sortedBy { abs(shown[it].value - g.pos[it]) > 0.01f }) {
+            val slot = IntArray(total)
+            val zIdx = IntArray(total)
+            for (grp in groups.values) {
+                grp.sortWith(compareBy<Int>({ if (it / 4 == mvr) 1 else 0 }, { it }))
+                grp.forEachIndexed { z, i -> zIdx[i] = z; slot[i] = grp.size - 1 - z }
+            }
+            for (idx in (0 until total).sortedWith(compareBy<Int>({ abs(shown[it].value - g.pos[it]) > 0.01f }, { zIdx[it] }))) {
                 val o = idx / 4
                 if (o !in g.active) continue
                 val q = shown[idx].value
                 val (x, y) = b.xy(o, idx % 4, q)
                 val hop = 1f + .3f * sin(PI * (q - floor(q))).toFloat()
-                val ctr = Offset(x * c + slot[idx] * c * 0.14f, y * c - slot[idx] * c * 0.14f)
+                val ctr = Offset(x * c + slot[idx] * c * 0.17f, y * c - slot[idx] * c * 0.17f)
                 val r = c * b.tokR * hop
                 val rr = r + c * 0.06f
                 drawCircle(Color.Black.copy(alpha = 0.12f), rr * 1.18f, ctr + Offset(0f, c * 0.09f))
@@ -805,9 +811,9 @@ fun GameScreen(g: Game, pal: Pal, pf: Prefs, sysPal: List<Color>, onRestart: () 
                 if (icon == 0) drawCircle(Color.White.copy(alpha = 0.4f), r * 0.4f, ctr - Offset(r * 0.25f, r * 0.25f))
                 else pieceIcon(icon, ctr, r * 0.58f, Color.White)
                 if (idx in mv) {
-                    val bo = pf.indBoost.v
+                    val bo = pf.indLevel.v / 50f
                     val sw = c * 0.07f * (1f + 0.7f * bo)
-                    if (bo > 0) drawCircle(pal.text.copy(alpha = 0.16f * bo), rr * 1.5f, ctr)
+                    if (bo > 0f) drawCircle(pal.text.copy(alpha = 0.16f * bo), rr * 1.5f, ctr)
                     if (pf.indicator.v == 0) drawCircle(pal.text, rr * pulse, ctr, style = Stroke(sw))
                     else {
                         val rad = rr * 1.3f
@@ -959,7 +965,7 @@ fun SettingsList(pal: Pal, pf: Prefs, sysPal: List<Color>) {
                     DropdownRow(pal, "Movable pieces", listOf("Pulsing circle", "Spinning dotted circle"), pf.indicator.v) { pf.indicator.v = it }
                 }
                 Label(pal, "Indicator brightness")
-                Seg(pal, listOf("Normal", "Bright", "Intense"), pf.indBoost.v) { pf.indBoost.v = it }
+                Group(pal) { SliderRow(pal, "Brightness", "${pf.indLevel.v}%", pf.indLevel.v, { pf.indLevel.v = it }, "Normal", "Intense") }
                 Label(pal, "Rules")
                 Group(pal) {
                     SwitchRow(pal, "Unlock pieces with 1 and 6", "Off: only a 6 unlocks a piece", pf.unlock1.v) { pf.unlock1.v = it }
@@ -977,7 +983,7 @@ fun SettingsList(pal: Pal, pf: Prefs, sysPal: List<Color>) {
                     if (k > 0) Swatch(pal.p[k - 1], tint)
                 }
                 Label(pal, "Piece speed")
-                Seg(pal, listOf("Slow", "Normal", "Fast"), pf.speed.v) { pf.speed.v = it }
+                Group(pal) { SliderRow(pal, "Speed", "${pf.speedPct.v}%", pf.speedPct.v, { pf.speedPct.v = it }, "Slow", "Fast") }
                 Label(pal, "Gameplay")
                 Group(pal) {
                     SwitchRow(pal, "Auto roll dice", "", pf.autoRoll.v) { pf.autoRoll.v = it }
@@ -1037,6 +1043,24 @@ fun GameDetails(g: Game, pal: Pal, mode: String) {
                     fontWeight = if (g.turn == p) FontWeight.Bold else FontWeight.Normal, maxLines = 1, modifier = Modifier.weight(1f))
                 Text("$home home · ${4 - home - base} out · $base in base", color = pal.sub, fontSize = 13.sp)
             }
+        }
+    }
+}
+
+@Composable
+fun SliderRow(pal: Pal, title: String, valueText: String, value: Int, onChange: (Int) -> Unit, left: String, right: String) {
+    Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(title, fontSize = 17.sp, modifier = Modifier.weight(1f))
+            Text(valueText, color = pal.hi)
+        }
+        Slider(
+            value = value.toFloat(), onValueChange = { onChange(it.toInt()) }, valueRange = 0f..100f,
+            colors = SliderDefaults.colors(thumbColor = pal.acc, activeTrackColor = pal.acc, inactiveTrackColor = pal.text.copy(alpha = 0.15f))
+        )
+        Row {
+            Text(left, color = pal.sub, fontSize = 12.sp, modifier = Modifier.weight(1f))
+            Text(right, color = pal.sub, fontSize = 12.sp)
         }
     }
 }
