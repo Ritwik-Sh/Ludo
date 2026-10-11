@@ -17,7 +17,7 @@ fun homeCell(o: Int, s: Int): Pair<Int, Int> = when (o) {
 }
 
 /** Board geometry. 4 players = classic cross (13 cells/arm); 5-6 players = circular ring (10 cells/arm). */
-class Board(val n: Int) {
+class Board(val n: Int, val ppp: Int = 4) {
     val per = if (n == 4) 13 else 10
     val tl = n * per
     val last = tl - 2          // last shared-track progress value
@@ -34,8 +34,12 @@ class Board(val n: Int) {
     fun baseCenter(o: Int) = if (!radial) Pair(if (o == 1 || o == 2) 12f else 3f, if (o >= 2) 12f else 3f)
     else polar(3.7f, ang(o * per - .5f + per / 2f))
     fun base(o: Int, i: Int): Pair<Float, Float> {
-        val c = baseCenter(o); val d = if (radial) .7f else 1.5f
-        return Pair(c.first + (i % 2 - .5f) * d, c.second + (i / 2 - .5f) * d)
+        val c = baseCenter(o)
+        val cols = if (ppp > 4) 3 else 2
+        val rows = (ppp + cols - 1) / cols
+        val dx = if (radial) (if (ppp > 4) .62f else .7f) else (if (ppp > 4) 1.3f else 1.5f)
+        val dy = if (radial) (if (ppp > 4) .62f else .7f) else 1.5f
+        return Pair(c.first + (i % cols - (cols - 1) / 2f) * dx, c.second + (i / cols - (rows - 1) / 2f) * dy)
     }
     fun fin(o: Int) = if (!radial) listOf(Pair(6.8f, 7.5f), Pair(7.5f, 6.8f), Pair(8.2f, 7.5f), Pair(7.5f, 8.2f))[o] else polar(1.0f, colAng(o))
     private fun at(o: Int, i: Int, p: Int): Pair<Float, Float> = when {
@@ -56,10 +60,12 @@ class Board(val n: Int) {
 
 class Game(val n: Int, val team: Boolean, val cpu: List<Boolean>, val names: List<String>, val stackSafe: Boolean,
            val unlock1: Boolean, val first: Int, val autoOut: Boolean, val autoSingle: Boolean, val cancel6: Boolean, val pseudo: Boolean,
-           val startOne: Boolean = false, val active: List<Int> = (0 until n).toList()) {
-    val b = Board(n)
-    val pos = mutableStateListOf<Int>().apply { repeat(4 * n) { add(-1) } }
-    init { if (startOne) for (o in active) pos[o * 4] = 0 }
+           val startOne: Boolean = false, val active: List<Int> = (0 until n).toList(),
+           val arrowBonus: Boolean = true, val killLock: Boolean = true, val removeWith1: Boolean = false, val ppp: Int = 4) {
+    val b = Board(n, ppp)
+    private val doneVal = if (removeWith1) b.home + 1 else b.home
+    val pos = mutableStateListOf<Int>().apply { repeat(ppp * n) { add(-1) } }
+    init { if (startOne) for (o in active) pos[o * ppp] = 0 }
     var turn by mutableStateOf(if (first in active) first else active[Random.nextInt(active.size)]); private set
     var dice by mutableStateOf(0); private set
     var rolled by mutableStateOf(false); private set
@@ -72,10 +78,16 @@ class Game(val n: Int, val team: Boolean, val cpu: List<Boolean>, val names: Lis
     val rolls = mutableStateListOf<Int>().apply { repeat(n) { add(0) } }
     val kills = mutableStateListOf<Int>().apply { repeat(n) { add(0) } }
     private var sixes = 0
+    private var idlePasses = 0
+    private var lockBroken = false
 
     private fun teamOf(o: Int) = if (team) o % 2 else o
     private fun partner(o: Int) = (o + 2) % 4
-    fun done(o: Int) = (0..3).all { pos[o * 4 + it] == b.home }
+    /** Has this player (or, in Team Up, their team) captured at least once? Also true if the game got stuck. */
+    private fun hasKill(o: Int) = lockBroken || (if (team) kills[o] + kills[partner(o)] else kills[o]) > 0
+    fun homeLocked(o: Int) = killLock && !hasKill(o)
+    fun gone(i: Int) = removeWith1 && pos[i] == b.home + 1
+    fun done(o: Int) = (0 until ppp).all { pos[o * ppp + it] == doneVal }
     private fun canAct(p: Int) = p in active && (if (team) !(done(p) && done(partner(p))) else !done(p))
 
     /** Whose tokens the current player moves (partner's once all own tokens are home in Team Up). */
@@ -84,13 +96,17 @@ class Game(val n: Int, val team: Boolean, val cpu: List<Boolean>, val names: Lis
     private fun dest(idx: Int): Int {
         val p = pos[idx]
         if (p == -1) return if (dice == 6 || (unlock1 && dice == 1)) 0 else -2
+        if (p == b.home) return if (removeWith1 && dice == 1) b.home + 1 else -2
+        if (p > b.home) return -2
         val np = p + dice
-        return if (np > b.home) -2 else np
+        if (np > b.home) return -2
+        if (killLock && np > b.last && !hasKill(idx / ppp)) return -2
+        return np
     }
 
     fun moves(): List<Int> {
         val o = mover()
-        return (o * 4 until o * 4 + 4).filter { dest(it) != -2 }.distinctBy { if (pos[it] == -1) -1000 - it else pos[it] }
+        return (o * ppp until o * ppp + ppp).filter { dest(it) != -2 }.distinctBy { if (pos[it] == -1) -1000 - it else pos[it] }
     }
 
     private fun victims(o: Int, np: Int): List<Int> {
@@ -98,10 +114,10 @@ class Game(val n: Int, val team: Boolean, val cpu: List<Boolean>, val names: Lis
         val a = (b.start(o) + np) % b.tl
         if (a in b.safe) return emptyList()
         fun on(q: Int, i: Int) = pos[i] in 0..b.last && (b.start(q) + pos[i]) % b.tl == a
-        val hit = (0 until 4 * n).filter { teamOf(it / 4) != teamOf(o) && on(it / 4, it) }
+        val hit = (0 until ppp * n).filter { teamOf(it / ppp) != teamOf(o) && on(it / ppp, it) }
         // Team Up: a defending stack of N falls if the arriving team has >= N pieces there (incl. the mover).
-        val mine = 1 + (0 until 4 * n).count { teamOf(it / 4) == teamOf(o) && on(it / 4, it) }
-        return hit.groupBy { teamOf(it / 4) }.values
+        val mine = 1 + (0 until ppp * n).count { teamOf(it / ppp) == teamOf(o) && on(it / ppp, it) }
+        return hit.groupBy { teamOf(it / ppp) }.values
             .filter { if (team) mine >= it.size else (it.size < 2 || !stackSafe || mine > it.size) }.flatten()
     }
 
@@ -111,7 +127,7 @@ class Game(val n: Int, val team: Boolean, val cpu: List<Boolean>, val names: Lis
     private fun captureValues(): Set<Int> {
         val o = mover()
         val res = mutableSetOf<Int>()
-        for (v in 1..6) for (i in o * 4 until o * 4 + 4) {
+        for (v in 1..6) for (i in o * ppp until o * ppp + ppp) {
             val p = pos[i]
             val np = if (p == -1) (if (v == 6 || (unlock1 && v == 1)) 0 else -2) else if (p + v <= b.home) p + v else -2
             if (np >= 0 && victims(o, np).isNotEmpty()) res += v
@@ -141,7 +157,7 @@ class Game(val n: Int, val team: Boolean, val cpu: List<Boolean>, val names: Lis
         return fromBag { it in allowed } ?: allowed.random()
     }
 
-    fun fresh() = Game(n, team, cpu, names, stackSafe, unlock1, first, autoOut, autoSingle, cancel6, pseudo, startOne, active)
+    fun fresh() = Game(n, team, cpu, names, stackSafe, unlock1, first, autoOut, autoSingle, cancel6, pseudo, startOne, active, arrowBonus, killLock, removeWith1, ppp)
 
     fun roll() {
         if (rolled || over) return
@@ -152,7 +168,7 @@ class Game(val n: Int, val team: Boolean, val cpu: List<Boolean>, val names: Lis
         if (sixes == 3) { next(); msg = "Three 6s - turn lost"; return }
         val m = moves()
         when {
-            m.isEmpty() -> { next(); msg = "No move possible" }
+            m.isEmpty() -> { idlePasses++; if (idlePasses >= active.size * 8) lockBroken = true; next(); msg = "No move possible" }
             (autoSingle && m.size == 1) || (autoOut && m.all { pos[it] == -1 }) -> { rolled = true; move(m[0]) }
             else -> rolled = true
         }
@@ -160,13 +176,14 @@ class Game(val n: Int, val team: Boolean, val cpu: List<Boolean>, val names: Lis
 
     fun move(idx: Int) {
         if (!rolled || over || idx !in moves()) return
-        val o = idx / 4
+        idlePasses = 0
+        val o = idx / ppp
         val np = dest(idx)
         val v = victims(o, np)
         v.forEach { pos[it] = -1 }
         kills[o] = kills[o] + v.size
         pos[idx] = np
-        val bonus = dice == 6 || v.isNotEmpty() || np == b.home
+        val bonus = dice == 6 || v.isNotEmpty() || np == b.home || (arrowBonus && np == b.last)
         if (done(o) && o !in order) order.add(o)
         rolled = false
         if (checkOver()) return
@@ -197,7 +214,7 @@ class Game(val n: Int, val team: Boolean, val cpu: List<Boolean>, val names: Lis
         val np = dest(it)
         when {
             np == b.home -> 100
-            victims(it / 4, np).isNotEmpty() -> 80
+            victims(it / ppp, np).isNotEmpty() -> 80
             pos[it] == -1 -> 50
             else -> np
         }
