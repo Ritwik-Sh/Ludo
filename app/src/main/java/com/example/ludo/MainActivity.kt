@@ -110,6 +110,8 @@ class Prefs(sp: SharedPreferences) {
     val pseudo = BoolP(sp, "pseudo", false)
     val startOne = BoolP(sp, "startOne", false)
     val indLevel = IntP(sp, "indLevel", 0)
+    val arrowBonus = BoolP(sp, "arrowBonus", true); val killLock = BoolP(sp, "killLock", true)
+    val removeWith1 = BoolP(sp, "removeWith1", false); val pieces = IntP(sp, "pieces", 4)
 }
 
 class MainActivity : ComponentActivity() {
@@ -462,7 +464,8 @@ fun Home(
             if (tab != 3) Button(
                 onClick = {
                     onStart(Game(n, team, cpu.take(n), List(n) { s -> names[s].trim().ifEmpty { "Player ${activeSeats.indexOf(s).let { j -> if (j >= 0) j + 1 else s + 1 }}" } }, pf.stack.v,
-                        pf.unlock1.v, pf.first.v, pf.autoOut.v, pf.autoSingle.v, pf.cancel6.v, pf.pseudo.v, pf.startOne.v, activeSeats))
+                        pf.unlock1.v, pf.first.v, pf.autoOut.v, pf.autoSingle.v, pf.cancel6.v, pf.pseudo.v, pf.startOne.v, activeSeats,
+                        pf.arrowBonus.v, pf.killLock.v, pf.removeWith1.v, pf.pieces.v))
                 },
                 shape = RoundedCornerShape(50), modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp).height(52.dp)
             ) { Text("Start game") }
@@ -643,7 +646,7 @@ fun GameScreen(g: Game, pal: Pal, pf: Prefs, sysPal: List<Color>, onRestart: () 
     val fx = remember(g, pf.sound.v, pf.vib.v) { Fx(ctx, pf.sound.v, pf.vib.v) }
     DisposableEffect(fx) { onDispose { fx.release() } }
     val b = g.b
-    val total = 4 * g.n
+    val total = g.ppp * g.n
     val stepMs = (450 - 3.5f * pf.speedPct.v).toInt()
     var busy by remember { mutableIntStateOf(0) }
     var burst by remember { mutableIntStateOf(0) }
@@ -678,7 +681,7 @@ fun GameScreen(g: Game, pal: Pal, pf: Prefs, sysPal: List<Color>, onRestart: () 
                         fx.step(); delay(40); s++
                     }
                     if (t == b.home.toFloat()) { burst++; fx.cheer() }
-                    else if (t <= b.last.toFloat() && (b.start(idx / 4) + t.toInt()) % b.tl in b.safe) fx.safe()
+                    else if (t <= b.last.toFloat() && (b.start(idx / g.ppp) + t.toInt()) % b.tl in b.safe) fx.safe()
                 } else a.snapTo(t)
             } finally { busy-- }
         }
@@ -718,7 +721,7 @@ fun GameScreen(g: Game, pal: Pal, pf: Prefs, sysPal: List<Color>, onRestart: () 
                         if (g.cpu[g.turn] || !g.rolled || g.over || paused) return@detectTapGestures
                         val c = size.width / 15f
                         fun d(i: Int): Float {
-                            val (x, y) = b.xy(i / 4, i % 4, g.pos[i].toFloat())
+                            val (x, y) = b.xy(i / g.ppp, i % g.ppp, g.pos[i].toFloat())
                             return (Offset(x * c, y * c) - off).getDistance()
                         }
                         val best = g.moves().minByOrNull { d(it) }
@@ -740,10 +743,20 @@ fun GameScreen(g: Game, pal: Pal, pf: Prefs, sysPal: List<Color>, onRestart: () 
                     val y0 = if (o >= 2) 9 else 0
                     drawRect(pc(o), Offset(x0 * c, y0 * c), Size(6 * c, 6 * c))
                     drawRoundRect(pal.surf, Offset((x0 + 1) * c, (y0 + 1) * c), Size(4 * c, 4 * c), CornerRadius(c * 0.6f))
-                    for (i in 0..3) drawCircle(pc(o).copy(alpha = 0.35f), c * 0.42f, P(b.base(o, i)))
+                    for (i in 0 until g.ppp) drawCircle(pc(o).copy(alpha = 0.35f), c * 0.42f, P(b.base(o, i)))
                 }
                 TRACK.forEach { (x, y) -> cell(x, y, pal.surf) }
-                for (o in 0..3) for (s in 0..4) { val (x, y) = homeCell(o, s); cell(x, y, pc(o)) }
+                for (o in 0..3) for (s in 0..4) {
+                    val (x, y) = homeCell(o, s)
+                    cell(x, y, if (o in g.active && g.homeLocked(o)) pc(o).copy(alpha = 0.3f) else pc(o))
+                }
+                for (o in g.active) {
+                    if (g.homeLocked(o)) { val (lx, ly) = b.col(o, 2); lock(Offset(lx * c, ly * c), c * 0.32f, pal.p[o]) }
+                    if (g.arrowBonus) {
+                        val a = b.track((b.start(o) + b.last) % b.tl); val c0 = b.col(o, 0)
+                        arrow(P(a), Offset(c0.first - a.first, c0.second - a.second), c * 0.28f, pal.p[o])
+                    }
+                }
                 TRACK.forEachIndexed { k, (x, y) ->
                     val st = if (k % 13 == 0) k / 13 else -1
                     if (st >= 0) { cell(x, y, pc(st)); star(Offset((x + .5f) * c, (y + .5f) * c), c * 0.34f, Color.White) }
@@ -761,7 +774,7 @@ fun GameScreen(g: Game, pal: Pal, pf: Prefs, sysPal: List<Color>, onRestart: () 
                 val cr = c * (if (g.n == 5) .34f else .28f)
                 for (o in 0 until g.n) {
                     drawCircle(pal.p[o].copy(alpha = .22f), c * 1.25f, P(b.baseCenter(o)))
-                    for (i in 0..3) drawCircle(pal.p[o].copy(alpha = .5f), c * .3f, P(b.base(o, i)))
+                    for (i in 0 until g.ppp) drawCircle(pal.p[o].copy(alpha = .5f), c * .3f, P(b.base(o, i)))
                 }
                 for (k in 0 until b.tl) {
                     val ctr = P(b.track(k))
@@ -771,7 +784,12 @@ fun GameScreen(g: Game, pal: Pal, pf: Prefs, sysPal: List<Color>, onRestart: () 
                     if (k in b.safe) star(ctr, cr * .8f, if (st) Color.White else pal.sub)
                 }
                 for (o in 0 until g.n) {
-                    for (s in 0..4) drawCircle(pal.p[o], c * .34f, P(b.col(o, s)))
+                    for (s in 0..4) drawCircle(if (g.homeLocked(o)) pal.p[o].copy(alpha = .3f) else pal.p[o], c * .34f, P(b.col(o, s)))
+                    if (g.homeLocked(o)) lock(P(b.col(o, 2)), c * .3f, pal.text)
+                    if (g.arrowBonus) {
+                        val a = b.track((b.start(o) + b.last) % b.tl); val c0 = b.col(o, 0)
+                        arrow(P(a), Offset(c0.first - a.first, c0.second - a.second), c * .24f, pal.p[o])
+                    }
                     val a = b.colAng(o); val h = PI / g.n
                     val pa = Path().apply {
                         moveTo(7.5f * c, 7.5f * c)
@@ -785,20 +803,20 @@ fun GameScreen(g: Game, pal: Pal, pf: Prefs, sysPal: List<Color>, onRestart: () 
             val mvr = g.mover()
             val groups = HashMap<Pair<Float, Float>, MutableList<Int>>()
             for (i in 0 until total) {
-                if (i / 4 !in g.active) continue
-                groups.getOrPut(b.xy(i / 4, i % 4, g.pos[i].toFloat())) { mutableListOf() }.add(i)
+                if (i / g.ppp !in g.active || g.gone(i)) continue
+                groups.getOrPut(b.xy(i / g.ppp, i % g.ppp, g.pos[i].toFloat())) { mutableListOf() }.add(i)
             }
             val slot = IntArray(total)
             val zIdx = IntArray(total)
             for (grp in groups.values) {
-                grp.sortWith(compareBy<Int>({ if (it / 4 == mvr) 1 else 0 }, { it }))
+                grp.sortWith(compareBy<Int>({ if (it / g.ppp == mvr) 1 else 0 }, { it }))
                 grp.forEachIndexed { z, i -> zIdx[i] = z; slot[i] = grp.size - 1 - z }
             }
             for (idx in (0 until total).sortedWith(compareBy<Int>({ abs(shown[it].value - g.pos[it]) > 0.01f }, { zIdx[it] }))) {
-                val o = idx / 4
-                if (o !in g.active) continue
+                val o = idx / g.ppp
+                if (o !in g.active || g.gone(idx)) continue
                 val q = shown[idx].value
-                val (x, y) = b.xy(o, idx % 4, q)
+                val (x, y) = b.xy(o, idx % g.ppp, q)
                 val hop = 1f + .3f * sin(PI * (q - floor(q))).toFloat()
                 val ctr = Offset(x * c + slot[idx] * c * 0.17f, y * c - slot[idx] * c * 0.17f)
                 val r = c * b.tokR * hop
@@ -972,12 +990,20 @@ fun SettingsList(pal: Pal, pf: Prefs, sysPal: List<Color>) {
                     Div(pal)
                     SwitchRow(pal, "Start with 1 piece unlocked", "Each player begins with one piece already out on its start square.", pf.startOne.v) { pf.startOne.v = it }
                     Div(pal)
+                    SwitchRow(pal, "Extra turn on arrow squares", "Landing exactly on your arrow square, the last square before your home lane, gives another roll.", pf.arrowBonus.v) { pf.arrowBonus.v = it }
+                    Div(pal)
+                    SwitchRow(pal, "Kill needed to enter home", "Your home lane stays locked until you capture at least one opposing piece. If nobody can move for a long time, all lanes unlock.", pf.killLock.v) { pf.killLock.v = it }
+                    Div(pal)
+                    SwitchRow(pal, "Remove finished pieces with a 1", "A piece that reaches the final spot stays there until you roll a 1 to take it off the board. You win once all your pieces are removed.", pf.removeWith1.v) { pf.removeWith1.v = it }
+                    Div(pal)
                     SwitchRow(pal, "Cancel 3rd 6 in a row", "Rolling three 6s in a row cancels the last move and passes your turn. When off, the dice never lands a third 6 in a row, so no turn is lost.", pf.cancel6.v) { pf.cancel6.v = it }
                     Div(pal)
                     SwitchRow(pal, "Pseudo-random dice", "Draws from a shuffled set of rolls, so streaks and droughts are rarer. When a roll could capture an opponent's piece, a capturing number comes up 55% of the time. Off: every roll is truly random.", pf.pseudo.v) { pf.pseudo.v = it }
                     Div(pal)
                     SwitchRow(pal, "Same-color stack is safe", "A stack of 2+ is safe until more opposing pieces gather on its square than the stack holds; then the whole stack is captured. Classic, 5 and 6 players.", pf.stack.v) { pf.stack.v = it }
                 }
+                Label(pal, "Pieces per player")
+                Seg(pal, listOf("4", "5", "6"), pf.pieces.v - 4) { pf.pieces.v = it + 4 }
                 Label(pal, "First player")
                 ChipRow(pal, listOf("Random", "Red", "Green", "Yellow", "Blue"), pf.first.v + 1, { pf.first.v = it - 1 }) { k, tint ->
                     if (k > 0) Swatch(pal.p[k - 1], tint)
@@ -1034,14 +1060,14 @@ fun GameDetails(g: Game, pal: Pal, mode: String) {
         }
         Spacer(Modifier.height(6.dp))
         g.active.forEach { p ->
-            val home = (0..3).count { g.pos[p * 4 + it] == g.b.home }
-            val base = (0..3).count { g.pos[p * 4 + it] == -1 }
+            val home = (0 until g.ppp).count { g.pos[p * g.ppp + it] >= g.b.home }
+            val base = (0 until g.ppp).count { g.pos[p * g.ppp + it] == -1 }
             Row(Modifier.fillMaxWidth().padding(vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
                 Box(Modifier.size(12.dp).clip(CircleShape).background(pal.p[p]))
                 Spacer(Modifier.width(8.dp))
                 Text(g.names[p] + if (g.turn == p) "  (turn)" else "", color = pal.text,
                     fontWeight = if (g.turn == p) FontWeight.Bold else FontWeight.Normal, maxLines = 1, modifier = Modifier.weight(1f))
-                Text("$home home · ${4 - home - base} out · $base in base", color = pal.sub, fontSize = 13.sp)
+                Text("$home home · ${g.ppp - home - base} out · $base in base", color = pal.sub, fontSize = 13.sp)
             }
         }
     }
@@ -1063,4 +1089,20 @@ fun SliderRow(pal: Pal, title: String, valueText: String, value: Int, onChange: 
             Text(right, color = pal.sub, fontSize = 12.sp)
         }
     }
+}
+
+private fun DrawScope.arrow(ctr: Offset, dir: Offset, r: Float, col: Color) {
+    val len = dir.getDistance()
+    if (len == 0f) return
+    val d = Offset(dir.x / len, dir.y / len)
+    val nrm = Offset(-d.y, d.x)
+    val tip = ctr + d * r
+    val b1 = ctr - d * (r * 0.7f) + nrm * (r * 0.8f)
+    val b2 = ctr - d * (r * 0.7f) - nrm * (r * 0.8f)
+    drawPath(Path().apply { moveTo(tip.x, tip.y); lineTo(b1.x, b1.y); lineTo(b2.x, b2.y); close() }, col)
+}
+
+private fun DrawScope.lock(ctr: Offset, r: Float, col: Color) {
+    drawRoundRect(col, Offset(ctr.x - r * .55f, ctr.y - r * .05f), Size(r * 1.1f, r * .85f), CornerRadius(r * .15f))
+    drawArc(col, 180f, 180f, false, Offset(ctr.x - r * .35f, ctr.y - r * .75f), Size(r * .7f, r * .9f), style = Stroke(r * .18f))
 }
