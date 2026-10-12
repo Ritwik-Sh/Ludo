@@ -61,7 +61,7 @@ class Board(val n: Int, val ppp: Int = 4) {
 class Game(val n: Int, val team: Boolean, val cpu: List<Boolean>, val names: List<String>, val stackSafe: Boolean,
            val unlock1: Boolean, val first: Int, val autoOut: Boolean, val autoSingle: Boolean, val cancel6: Boolean, val pseudo: Boolean,
            val startOne: Boolean = false, val active: List<Int> = (0 until n).toList(),
-           val arrowBonus: Boolean = true, val killLock: Boolean = true, val removeWith1: Boolean = false, val ppp: Int = 4) {
+           val arrowBonus: Boolean = true, val killLock: Boolean = false, val removeWith1: Boolean = false, val ppp: Int = 4) {
     val b = Board(n, ppp)
     private val doneVal = if (removeWith1) b.home + 1 else b.home
     val pos = mutableStateListOf<Int>().apply { repeat(ppp * n) { add(-1) } }
@@ -183,7 +183,7 @@ class Game(val n: Int, val team: Boolean, val cpu: List<Boolean>, val names: Lis
         v.forEach { pos[it] = -1 }
         kills[o] = kills[o] + v.size
         pos[idx] = np
-        val bonus = dice == 6 || v.isNotEmpty() || np == b.home || (arrowBonus && np == b.last)
+        val bonus = dice == 6 || v.isNotEmpty() || (arrowBonus && np == b.home)
         if (done(o) && o !in order) order.add(o)
         rolled = false
         if (checkOver()) return
