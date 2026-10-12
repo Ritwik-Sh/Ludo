@@ -110,7 +110,7 @@ class Prefs(sp: SharedPreferences) {
     val pseudo = BoolP(sp, "pseudo", false)
     val startOne = BoolP(sp, "startOne", false)
     val indLevel = IntP(sp, "indLevel", 0)
-    val arrowBonus = BoolP(sp, "arrowBonus", true); val killLock = BoolP(sp, "killLock", true)
+    val arrowBonus = BoolP(sp, "arrowBonus", true); val killLock = BoolP(sp, "killLockV2", false)
     val removeWith1 = BoolP(sp, "removeWith1", false); val pieces = IntP(sp, "pieces", 4)
 }
 
@@ -748,14 +748,10 @@ fun GameScreen(g: Game, pal: Pal, pf: Prefs, sysPal: List<Color>, onRestart: () 
                 TRACK.forEach { (x, y) -> cell(x, y, pal.surf) }
                 for (o in 0..3) for (s in 0..4) {
                     val (x, y) = homeCell(o, s)
-                    cell(x, y, if (o in g.active && g.homeLocked(o)) pc(o).copy(alpha = 0.3f) else pc(o))
+                    cell(x, y, if (o in g.active && g.homeLocked(o)) pc(o).copy(alpha = 0.25f) else pc(o))
                 }
                 for (o in g.active) {
-                    if (g.homeLocked(o)) { val (lx, ly) = b.col(o, 2); lock(Offset(lx * c, ly * c), c * 0.32f, pal.p[o]) }
-                    if (g.arrowBonus) {
-                        val a = b.track((b.start(o) + b.last) % b.tl); val c0 = b.col(o, 0)
-                        arrow(P(a), Offset(c0.first - a.first, c0.second - a.second), c * 0.28f, pal.p[o])
-                    }
+                    if (g.homeLocked(o)) { val (lx, ly) = b.col(o, 2); drawCircle(pal.surf, c * 0.42f, Offset(lx * c, ly * c)); lock(Offset(lx * c, ly * c), c * 0.3f, pal.text) }
                 }
                 TRACK.forEachIndexed { k, (x, y) ->
                     val st = if (k % 13 == 0) k / 13 else -1
@@ -784,12 +780,8 @@ fun GameScreen(g: Game, pal: Pal, pf: Prefs, sysPal: List<Color>, onRestart: () 
                     if (k in b.safe) star(ctr, cr * .8f, if (st) Color.White else pal.sub)
                 }
                 for (o in 0 until g.n) {
-                    for (s in 0..4) drawCircle(if (g.homeLocked(o)) pal.p[o].copy(alpha = .3f) else pal.p[o], c * .34f, P(b.col(o, s)))
-                    if (g.homeLocked(o)) lock(P(b.col(o, 2)), c * .3f, pal.text)
-                    if (g.arrowBonus) {
-                        val a = b.track((b.start(o) + b.last) % b.tl); val c0 = b.col(o, 0)
-                        arrow(P(a), Offset(c0.first - a.first, c0.second - a.second), c * .24f, pal.p[o])
-                    }
+                    for (s in 0..4) drawCircle(if (g.homeLocked(o)) pal.p[o].copy(alpha = .25f) else pal.p[o], c * .34f, P(b.col(o, s)))
+                    if (g.homeLocked(o)) { drawCircle(pal.surf, c * .4f, P(b.col(o, 2))); lock(P(b.col(o, 2)), c * .28f, pal.text) }
                     val a = b.colAng(o); val h = PI / g.n
                     val pa = Path().apply {
                         moveTo(7.5f * c, 7.5f * c)
@@ -990,7 +982,7 @@ fun SettingsList(pal: Pal, pf: Prefs, sysPal: List<Color>) {
                     Div(pal)
                     SwitchRow(pal, "Start with 1 piece unlocked", "Each player begins with one piece already out on its start square.", pf.startOne.v) { pf.startOne.v = it }
                     Div(pal)
-                    SwitchRow(pal, "Extra turn on arrow squares", "Landing exactly on your arrow square, the last square before your home lane, gives another roll.", pf.arrowBonus.v) { pf.arrowBonus.v = it }
+                    SwitchRow(pal, "Extra turn on reaching home", "A piece landing exactly on its arrow in the centre, finishing its journey, gives another roll.", pf.arrowBonus.v) { pf.arrowBonus.v = it }
                     Div(pal)
                     SwitchRow(pal, "Kill needed to enter home", "Your home lane stays locked until you capture at least one opposing piece. If nobody can move for a long time, all lanes unlock.", pf.killLock.v) { pf.killLock.v = it }
                     Div(pal)
@@ -1075,31 +1067,28 @@ fun GameDetails(g: Game, pal: Pal, mode: String) {
 
 @Composable
 fun SliderRow(pal: Pal, title: String, valueText: String, value: Int, onChange: (Int) -> Unit, left: String, right: String) {
-    Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp)) {
+    Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 14.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(title, fontSize = 17.sp, modifier = Modifier.weight(1f))
             Text(valueText, color = pal.hi)
         }
+        Spacer(Modifier.height(10.dp))
+        // One UI style slider: thick rounded pill, accent fill, slim white handle
         Slider(
-            value = value.toFloat(), onValueChange = { onChange(it.toInt()) }, valueRange = 0f..100f,
-            colors = SliderDefaults.colors(thumbColor = pal.acc, activeTrackColor = pal.acc, inactiveTrackColor = pal.text.copy(alpha = 0.15f))
+            value = value.toFloat(), onValueChange = { onChange(it.roundToInt()) }, valueRange = 0f..100f,
+            thumb = { Box(Modifier.size(width = 5.dp, height = 22.dp).clip(CircleShape).background(Color.White)) },
+            track = { st ->
+                val frac = (st.value - st.valueRange.start) / (st.valueRange.endInclusive - st.valueRange.start)
+                Box(Modifier.fillMaxWidth().height(40.dp).clip(RoundedCornerShape(20.dp)).background(pal.text.copy(alpha = 0.12f))) {
+                    Box(Modifier.fillMaxWidth(frac.coerceIn(0f, 1f)).fillMaxHeight().background(pal.acc))
+                }
+            }
         )
         Row {
             Text(left, color = pal.sub, fontSize = 12.sp, modifier = Modifier.weight(1f))
             Text(right, color = pal.sub, fontSize = 12.sp)
         }
     }
-}
-
-private fun DrawScope.arrow(ctr: Offset, dir: Offset, r: Float, col: Color) {
-    val len = dir.getDistance()
-    if (len == 0f) return
-    val d = Offset(dir.x / len, dir.y / len)
-    val nrm = Offset(-d.y, d.x)
-    val tip = ctr + d * r
-    val b1 = ctr - d * (r * 0.7f) + nrm * (r * 0.8f)
-    val b2 = ctr - d * (r * 0.7f) - nrm * (r * 0.8f)
-    drawPath(Path().apply { moveTo(tip.x, tip.y); lineTo(b1.x, b1.y); lineTo(b2.x, b2.y); close() }, col)
 }
 
 private fun DrawScope.lock(ctr: Offset, r: Float, col: Color) {
