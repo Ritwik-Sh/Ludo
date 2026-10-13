@@ -1065,6 +1065,7 @@ fun GameDetails(g: Game, pal: Pal, mode: String) {
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SliderRow(pal: Pal, title: String, valueText: String, value: Int, onChange: (Int) -> Unit, left: String, right: String) {
     Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 14.dp)) {
