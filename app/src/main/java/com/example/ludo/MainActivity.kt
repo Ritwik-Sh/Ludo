@@ -75,6 +75,8 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.core.view.WindowCompat
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import androidx.activity.BackEventCompat
 import kotlin.math.*
 
 class Pal(val bg: Color, val surf: Color, val text: Color, val sub: Color, val acc: Color, val p: List<Color>,
@@ -845,7 +847,7 @@ fun GameScreen(g: Game, pal: Pal, pf: Prefs, sysPal: List<Color>, onRestart: () 
     }
     val red = Color(0xFFE5484D)
     val modeLabel = if (g.team) "Team Up 2v2" else when (g.n) { 5 -> "5 players"; 6 -> "6 players"; else -> "Classic · ${g.active.size} players" }
-    if (paused && !confirm && !settingsOpen) OneDialog(pal, "Paused", "", listOf(
+    if (paused && !confirm) OneDialog(pal, "Paused", "", listOf(
         DlgAction("Resume", pal.hi, true) { paused = false },
         DlgAction("Settings", pal.text) { settingsOpen = true },
         DlgAction("Restart game", pal.text) { onRestart() },
@@ -1029,22 +1031,31 @@ fun SettingsList(pal: Pal, pf: Prefs, sysPal: List<Color>) {
                 }
 }
 
-/** Full-screen settings opened from the pause menu; shrinks and slides with the predictive back gesture. */
+/**
+ * Full-screen settings opened from the pause menu. Predictive back: the page only slides sideways
+ * (no fade or scale), up to half the screen while the gesture is held, and finishes sliding off on release.
+ */
 @Composable
 fun SettingsSheet(pal: Pal, pf: Prefs, sysPal: List<Color>, onClose: () -> Unit) {
-    var prog by remember { mutableFloatStateOf(0f) }
+    val slide = remember { Animatable(0f) }   // fraction of the screen width the page has moved
+    var dir by remember { mutableFloatStateOf(1f) }
+    val scope = rememberCoroutineScope()
     PredictiveBackHandler { flow ->
-        try { flow.collect { prog = it.progress }; onClose() } catch (e: CancellationException) { prog = 0f }
+        try {
+            flow.collect { ev ->
+                dir = if (ev.swipeEdge == BackEventCompat.EDGE_RIGHT) -1f else 1f
+                slide.snapTo(0.5f * ev.progress)
+            }
+            slide.animateTo(1f, tween(220, easing = FastOutLinearInEasing))
+            onClose()
+        } catch (e: CancellationException) {
+            scope.launch { slide.animateTo(0f, spring(dampingRatio = 0.85f, stiffness = 400f)) }
+        }
     }
     Column(
         Modifier.fillMaxSize()
-            .graphicsLayer {
-                val sc = 1f - 0.08f * prog
-                scaleX = sc; scaleY = sc
-                translationX = 16.dp.toPx() * prog
-                alpha = 1f - 0.2f * prog
-            }
-            .clip(RoundedCornerShape((28 * prog).dp)).background(pal.bg).pointerInput(Unit) { detectTapGestures { } }
+            .graphicsLayer { translationX = dir * slide.value * size.width }
+            .background(pal.bg).pointerInput(Unit) { detectTapGestures { } }
     ) {
         Row(Modifier.padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
             Box(Modifier.size(44.dp).clip(CircleShape).background(pal.surf).clickable(onClick = onClose), contentAlignment = Alignment.Center) {
