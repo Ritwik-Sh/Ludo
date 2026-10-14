@@ -61,7 +61,7 @@ class Board(val n: Int, val ppp: Int = 4) {
 class Game(val n: Int, val team: Boolean, val cpu: List<Boolean>, val names: List<String>, val stackSafe: Boolean,
            val unlock1: Boolean, val first: Int, val autoOut: Boolean, val autoSingle: Boolean, val cancel6: Boolean, val pseudo: Boolean,
            val startOne: Boolean = false, val active: List<Int> = (0 until n).toList(),
-           val arrowBonus: Boolean = true, val killLock: Boolean = false, val removeWith1: Boolean = false, val ppp: Int = 4) {
+           val killLock: Boolean = false, val removeWith1: Boolean = false, val ppp: Int = 4) {
     val b = Board(n, ppp)
     private val doneVal = if (removeWith1) b.home + 1 else b.home
     val pos = mutableStateListOf<Int>().apply { repeat(ppp * n) { add(-1) } }
@@ -109,16 +109,20 @@ class Game(val n: Int, val team: Boolean, val cpu: List<Boolean>, val names: Lis
         return (o * ppp until o * ppp + ppp).filter { dest(it) != -2 }.distinctBy { if (pos[it] == -1) -1000 - it else pos[it] }
     }
 
+    private fun tokensAt(a: Int): List<Int> = (0 until ppp * n).filter {
+        it / ppp in active && pos[it] in 0..b.last && (b.start(it / ppp) + pos[it]) % b.tl == a
+    }
+
+    /** Team Up: two pieces of different colours on one square (same team) cannot be captured. */
+    private fun protectedGroup(grp: List<Int>) = team && grp.map { it / ppp }.toSet().size >= 2
+
+    /** Pieces an arriving piece captures: one piece of every unprotected opposing group (stacks of the same colour lose one). */
     private fun victims(o: Int, np: Int): List<Int> {
         if (np !in 0..b.last) return emptyList()
         val a = (b.start(o) + np) % b.tl
         if (a in b.safe) return emptyList()
-        fun on(q: Int, i: Int) = pos[i] in 0..b.last && (b.start(q) + pos[i]) % b.tl == a
-        val hit = (0 until ppp * n).filter { teamOf(it / ppp) != teamOf(o) && on(it / ppp, it) }
-        // Team Up: a defending stack of N falls if the arriving team has >= N pieces there (incl. the mover).
-        val mine = 1 + (0 until ppp * n).count { teamOf(it / ppp) == teamOf(o) && on(it / ppp, it) }
-        return hit.groupBy { teamOf(it / ppp) }.values
-            .filter { if (team) mine >= it.size else (it.size < 2 || !stackSafe || mine > it.size) }.flatten()
+        return tokensAt(a).filter { teamOf(it / ppp) != teamOf(o) }
+            .groupBy { teamOf(it / ppp) }.values.filter { !protectedGroup(it) }.map { it.first() }
     }
 
     private val bags = Array(n) { mutableListOf<Int>() }
@@ -157,7 +161,7 @@ class Game(val n: Int, val team: Boolean, val cpu: List<Boolean>, val names: Lis
         return fromBag { it in allowed } ?: allowed.random()
     }
 
-    fun fresh() = Game(n, team, cpu, names, stackSafe, unlock1, first, autoOut, autoSingle, cancel6, pseudo, startOne, active, arrowBonus, killLock, removeWith1, ppp)
+    fun fresh() = Game(n, team, cpu, names, stackSafe, unlock1, first, autoOut, autoSingle, cancel6, pseudo, startOne, active, killLock, removeWith1, ppp)
 
     fun roll() {
         if (rolled || over) return
@@ -179,11 +183,26 @@ class Game(val n: Int, val team: Boolean, val cpu: List<Boolean>, val names: Lis
         idlePasses = 0
         val o = idx / ppp
         val np = dest(idx)
+        val p0 = pos[idx]
         val v = victims(o, np)
         v.forEach { pos[it] = -1 }
         kills[o] = kills[o] + v.size
         pos[idx] = np
-        val bonus = dice == 6 || v.isNotEmpty() || (arrowBonus && np == b.home)
+        // A protected Team Up pair was split: the piece left behind next to an enemy is captured instantly
+        if (p0 in 0..b.last) {
+            val a0 = (b.start(o) + p0) % b.tl
+            if (a0 !in b.safe) {
+                val here = tokensAt(a0)
+                val mine = here.filter { teamOf(it / ppp) == teamOf(o) }
+                val foes = here.filter { teamOf(it / ppp) != teamOf(o) }
+                if (mine.isNotEmpty() && foes.isNotEmpty() && !protectedGroup(mine)) {
+                    val k = min(foes.size, mine.size)
+                    mine.take(k).forEach { pos[it] = -1 }
+                    kills[foes.first() / ppp] = kills[foes.first() / ppp] + k
+                }
+            }
+        }
+        val bonus = dice == 6 || v.isNotEmpty() || np == b.home
         if (done(o) && o !in order) order.add(o)
         rolled = false
         if (checkOver()) return

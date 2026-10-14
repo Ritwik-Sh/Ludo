@@ -6,6 +6,9 @@ import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.PredictiveBackHandler
+import androidx.compose.ui.graphics.Brush
+import kotlin.coroutines.cancellation.CancellationException
 import androidx.activity.compose.setContent
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.*
@@ -110,7 +113,7 @@ class Prefs(sp: SharedPreferences) {
     val pseudo = BoolP(sp, "pseudo", false)
     val startOne = BoolP(sp, "startOne", false)
     val indLevel = IntP(sp, "indLevel", 0)
-    val arrowBonus = BoolP(sp, "arrowBonus", true); val killLock = BoolP(sp, "killLockV2", false)
+    val killLock = BoolP(sp, "killLockV2", false)
     val removeWith1 = BoolP(sp, "removeWith1", false); val pieces = IntP(sp, "pieces", 4)
 }
 
@@ -465,7 +468,7 @@ fun Home(
                 onClick = {
                     onStart(Game(n, team, cpu.take(n), List(n) { s -> names[s].trim().ifEmpty { "Player ${activeSeats.indexOf(s).let { j -> if (j >= 0) j + 1 else s + 1 }}" } }, pf.stack.v,
                         pf.unlock1.v, pf.first.v, pf.autoOut.v, pf.autoSingle.v, pf.cancel6.v, pf.pseudo.v, pf.startOne.v, activeSeats,
-                        pf.arrowBonus.v, pf.killLock.v, pf.removeWith1.v, pf.pieces.v))
+                        pf.killLock.v, pf.removeWith1.v, pf.pieces.v))
                 },
                 shape = RoundedCornerShape(50), modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp).height(52.dp)
             ) { Text("Start game") }
@@ -640,7 +643,7 @@ fun GameScreen(g: Game, pal: Pal, pf: Prefs, sysPal: List<Color>, onRestart: () 
     var confirm by remember { mutableStateOf(false) }
     var paused by remember { mutableStateOf(false) }
     var settingsOpen by remember { mutableStateOf(false) }
-    BackHandler { confirm = true }
+    BackHandler(enabled = !paused && !confirm && !settingsOpen && !g.over) { confirm = true }
     val ctx = LocalContext.current
     val haptic = LocalHapticFeedback.current
     val fx = remember(g, pf.sound.v, pf.vib.v) { Fx(ctx, pf.sound.v, pf.vib.v) }
@@ -652,7 +655,7 @@ fun GameScreen(g: Game, pal: Pal, pf: Prefs, sysPal: List<Color>, onRestart: () 
     var burst by remember { mutableIntStateOf(0) }
     val burstAnim = remember { Animatable(0f) }
     LaunchedEffect(burst) {
-        if (burst > 0) { burstAnim.snapTo(0f); burstAnim.animateTo(1f, tween(2600, easing = LinearEasing)) }
+        if (burst > 0) { burstAnim.snapTo(0f); burstAnim.animateTo(1f, tween(3000, easing = LinearEasing)) }
     }
     LaunchedEffect(g.tick, g.turn, g.rolled, g.over, busy, paused) {
         if (g.over || busy > 0 || paused) return@LaunchedEffect
@@ -885,38 +888,46 @@ fun Confetti(pal: Pal) {
     }
 }
 
-/** One UI style dialog: bottom-anchored rounded card, centred text, pill buttons (side by side, or stacked when 3+). */
+/** One UI style dialog, drawn in-app so it can follow the predictive back gesture. */
 @Composable
 fun OneDialog(pal: Pal, title: String, text: String, actions: List<DlgAction>, extra: (@Composable () -> Unit)? = null, confetti: Boolean = false, onDismiss: (() -> Unit)?) {
-    Dialog(
-        onDismissRequest = { onDismiss?.invoke() },
-        properties = DialogProperties(usePlatformDefaultWidth = false, dismissOnBackPress = onDismiss != null, dismissOnClickOutside = false)
+    var prog by remember { mutableFloatStateOf(0f) }
+    var shown by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) { shown = true }
+    val appear by animateFloatAsState(if (shown) 1f else 0f, tween(220), label = "dlg")
+    if (onDismiss != null) PredictiveBackHandler { flow ->
+        try { flow.collect { prog = it.progress }; onDismiss() } catch (e: CancellationException) { prog = 0f }
+    }
+    Box(
+        Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.5f * appear * (1f - 0.6f * prog)))
+            .pointerInput(onDismiss) { detectTapGestures { onDismiss?.invoke() } }
     ) {
-        Box(
-            Modifier.fillMaxSize().then(
-                if (onDismiss != null) Modifier.clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) { onDismiss() }
-                else Modifier
-            )
-        ) {
-            if (confetti) Confetti(pal)
-            Box(Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 24.dp), contentAlignment = Alignment.BottomCenter) {
-                Column(
-                    Modifier.fillMaxWidth().clip(RoundedCornerShape(32.dp)).background(pal.surf).pointerInput(Unit) { detectTapGestures { } }.padding(24.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    Text(title, fontSize = 20.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center, color = pal.text)
-                    if (text.isNotEmpty()) Text(text, color = pal.sub, textAlign = TextAlign.Center, modifier = Modifier.padding(top = 12.dp))
-                    extra?.invoke()
-                    Spacer(Modifier.height(24.dp))
-                    val btn: @Composable (DlgAction, Modifier) -> Unit = { a, mod ->
-                        Box(mod.height(52.dp).clip(CircleShape).background(pal.bg).clickable(onClick = a.onClick), contentAlignment = Alignment.Center) {
-                            Text(a.label, fontWeight = if (a.bold) FontWeight.Bold else FontWeight.Medium, color = a.color)
-                        }
+        if (confetti) Confetti(pal)
+        Box(Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 24.dp), contentAlignment = Alignment.BottomCenter) {
+            Column(
+                Modifier.fillMaxWidth()
+                    .graphicsLayer {
+                        val sc = 1f - 0.1f * prog
+                        scaleX = sc; scaleY = sc
+                        translationY = (1f - appear) * 80.dp.toPx() + 24.dp.toPx() * prog
+                        alpha = appear * (1f - 0.25f * prog)
+                        transformOrigin = TransformOrigin(0.5f, 1f)
                     }
-                    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                        actions.chunked(if (actions.size == 4 || actions.size <= 2) 2 else 1).forEach { r ->
-                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) { r.forEach { btn(it, Modifier.weight(1f)) } }
-                        }
+                    .clip(RoundedCornerShape(32.dp)).background(pal.surf).pointerInput(Unit) { detectTapGestures { } }.padding(24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text(title, fontSize = 20.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center, color = pal.text)
+                if (text.isNotEmpty()) Text(text, color = pal.sub, textAlign = TextAlign.Center, modifier = Modifier.padding(top = 12.dp))
+                extra?.invoke()
+                Spacer(Modifier.height(24.dp))
+                val btn: @Composable (DlgAction, Modifier) -> Unit = { a, mod ->
+                    Box(mod.height(52.dp).clip(CircleShape).background(pal.bg).clickable(onClick = a.onClick), contentAlignment = Alignment.Center) {
+                        Text(a.label, fontWeight = if (a.bold) FontWeight.Bold else FontWeight.Medium, color = a.color)
+                    }
+                }
+                Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    actions.chunked(if (actions.size == 4 || actions.size <= 2) 2 else 1).forEach { r ->
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) { r.forEach { btn(it, Modifier.weight(1f)) } }
                     }
                 }
             }
@@ -924,32 +935,34 @@ fun OneDialog(pal: Pal, title: String, text: String, actions: List<DlgAction>, e
     }
 }
 
-private class Spark(val side: Float, val y0: Float, val speed: Float, val ang: Float, val w: Float, val h: Float, val spin: Float, val ci: Int)
+private class Spark(val side: Float, val xf: Float, val yf: Float, val speed: Float, val ang: Float, val w: Float, val h: Float, val spin: Float, val ci: Int)
 
-/** Confetti cannons behind the board: fires from both side edges when a piece reaches home. */
+/** Confetti fired from behind the board out of its top and bottom edges; gravity always pulls it back toward the board. */
 @Composable
 fun BurstLayer(pal: Pal, key: Int, anim: Animatable<Float, AnimationVector1D>) {
     val sparks = remember(key) {
-        List(70) {
-            Spark(if (it % 2 == 0) 1f else -1f, Random.nextFloat() * 2f - 1f, 650f + Random.nextFloat() * 450f,
-                8f + Random.nextFloat() * 45f, 6f + Random.nextFloat() * 6f, 10f + Random.nextFloat() * 8f,
-                Random.nextFloat() * 6f - 3f, Random.nextInt(6))
+        List(100) {
+            Spark(if (it % 2 == 0) 1f else -1f, Random.nextFloat() * 2f - 1f, Random.nextFloat() * 0.4f - 0.2f,
+                700f + Random.nextFloat() * 450f, Random.nextFloat() * 70f - 35f, 6f + Random.nextFloat() * 6f,
+                10f + Random.nextFloat() * 8f, Random.nextFloat() * 6f - 3f, Random.nextInt(6))
         }
     }
     Canvas(Modifier.fillMaxSize()) {
         val p = anim.value
         if (p <= 0f || p >= 1f) return@Canvas
-        val t = p * 2.6f
-        val edge = 16.dp.toPx()
-        val g = 1000.dp.toPx()
+        val t = p * 3f
+        val boardW = size.width - 32.dp.toPx()
+        val cy = size.height / 2
+        val top = cy - boardW / 2
+        val bottom = cy + boardW / 2
+        val g = 1100.dp.toPx()
         val alpha = min(1f, (1f - p) * 3f)
         for (s in sparks) {
             val a = s.ang * PI.toFloat() / 180f
             val v = s.speed.dp.toPx()
-            val x0 = if (s.side > 0f) edge else size.width - edge
-            val y0 = size.height / 2 + s.y0 * 120.dp.toPx()
-            val x = x0 + s.side * v * sin(a) * t
-            val y = y0 - v * cos(a) * t + 0.5f * g * t * t
+            val x = size.width / 2 + s.xf * boardW * 0.4f + v * sin(a) * t
+            val y = cy + s.yf * boardW - s.side * v * cos(a) * t + 0.5f * s.side * g * t * t
+            if ((s.side > 0f && y > top) || (s.side < 0f && y < bottom)) continue
             val w = s.w.dp.toPx(); val h = s.h.dp.toPx()
             rotate(s.spin * t * 360f, Offset(x, y)) {
                 drawRect(pal.p[s.ci].copy(alpha = alpha), Offset(x - w / 2, y - h / 2), Size(w, h))
@@ -982,20 +995,18 @@ fun SettingsList(pal: Pal, pf: Prefs, sysPal: List<Color>) {
                     Div(pal)
                     SwitchRow(pal, "Start with 1 piece unlocked", "Each player begins with one piece already out on its start square.", pf.startOne.v) { pf.startOne.v = it }
                     Div(pal)
-                    SwitchRow(pal, "Extra turn on reaching home", "A piece landing exactly on its arrow in the centre, finishing its journey, gives another roll.", pf.arrowBonus.v) { pf.arrowBonus.v = it }
+                    SwitchRow(pal, "Cancel 3rd 6 in a row", "Rolling three 6s in a row cancels the last move and passes your turn. When off, the dice never lands a third 6 in a row, so no turn is lost.", pf.cancel6.v) { pf.cancel6.v = it }
                     Div(pal)
+                    SwitchRow(pal, "Pseudo-random dice", "Draws from a shuffled set of rolls, so streaks and droughts are rarer. When a roll could capture an opponent's piece, a capturing number comes up 55% of the time. Off: every roll is truly random.", pf.pseudo.v) { pf.pseudo.v = it }
+                }
+                Label(pal, "Custom gamemodes")
+                Group(pal) {
                     SwitchRow(pal, "Kill needed to enter home", "Your home lane stays locked until you capture at least one opposing piece. If nobody can move for a long time, all lanes unlock.", pf.killLock.v) { pf.killLock.v = it }
                     Div(pal)
                     SwitchRow(pal, "Remove finished pieces with a 1", "A piece that reaches the final spot stays there until you roll a 1 to take it off the board. You win once all your pieces are removed.", pf.removeWith1.v) { pf.removeWith1.v = it }
                     Div(pal)
-                    SwitchRow(pal, "Cancel 3rd 6 in a row", "Rolling three 6s in a row cancels the last move and passes your turn. When off, the dice never lands a third 6 in a row, so no turn is lost.", pf.cancel6.v) { pf.cancel6.v = it }
-                    Div(pal)
-                    SwitchRow(pal, "Pseudo-random dice", "Draws from a shuffled set of rolls, so streaks and droughts are rarer. When a roll could capture an opponent's piece, a capturing number comes up 55% of the time. Off: every roll is truly random.", pf.pseudo.v) { pf.pseudo.v = it }
-                    Div(pal)
-                    SwitchRow(pal, "Same-color stack is safe", "A stack of 2+ is safe until more opposing pieces gather on its square than the stack holds; then the whole stack is captured. Classic, 5 and 6 players.", pf.stack.v) { pf.stack.v = it }
+                    DropdownRow(pal, "Pieces per player", listOf("4 (classic)", "5", "6"), pf.pieces.v - 4) { pf.pieces.v = it + 4 }
                 }
-                Label(pal, "Pieces per player")
-                Seg(pal, listOf("4", "5", "6"), pf.pieces.v - 4) { pf.pieces.v = it + 4 }
                 Label(pal, "First player")
                 ChipRow(pal, listOf("Random", "Red", "Green", "Yellow", "Blue"), pf.first.v + 1, { pf.first.v = it - 1 }) { k, tint ->
                     if (k > 0) Swatch(pal.p[k - 1], tint)
@@ -1018,27 +1029,38 @@ fun SettingsList(pal: Pal, pf: Prefs, sysPal: List<Color>) {
                 }
 }
 
-/** Full-screen settings opened from the pause menu. */
+/** Full-screen settings opened from the pause menu; shrinks and slides with the predictive back gesture. */
 @Composable
 fun SettingsSheet(pal: Pal, pf: Prefs, sysPal: List<Color>, onClose: () -> Unit) {
-    Dialog(onDismissRequest = onClose, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-        Column(Modifier.fillMaxSize().background(pal.bg)) {
-            Row(Modifier.padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-                Box(Modifier.size(44.dp).clip(CircleShape).background(pal.surf).clickable(onClick = onClose), contentAlignment = Alignment.Center) {
-                    Canvas(Modifier.size(18.dp)) {
-                        drawPath(Path().apply {
-                            moveTo(size.width * .65f, size.height * .1f); lineTo(size.width * .3f, size.height * .5f); lineTo(size.width * .65f, size.height * .9f)
-                        }, pal.text, style = Stroke(size.width * .12f, cap = StrokeCap.Round, join = StrokeJoin.Round))
-                    }
+    var prog by remember { mutableFloatStateOf(0f) }
+    PredictiveBackHandler { flow ->
+        try { flow.collect { prog = it.progress }; onClose() } catch (e: CancellationException) { prog = 0f }
+    }
+    Column(
+        Modifier.fillMaxSize()
+            .graphicsLayer {
+                val sc = 1f - 0.08f * prog
+                scaleX = sc; scaleY = sc
+                translationX = 16.dp.toPx() * prog
+                alpha = 1f - 0.2f * prog
+            }
+            .clip(RoundedCornerShape((28 * prog).dp)).background(pal.bg).pointerInput(Unit) { detectTapGestures { } }
+    ) {
+        Row(Modifier.padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.size(44.dp).clip(CircleShape).background(pal.surf).clickable(onClick = onClose), contentAlignment = Alignment.Center) {
+                Canvas(Modifier.size(18.dp)) {
+                    drawPath(Path().apply {
+                        moveTo(size.width * .65f, size.height * .1f); lineTo(size.width * .3f, size.height * .5f); lineTo(size.width * .65f, size.height * .9f)
+                    }, pal.text, style = Stroke(size.width * .12f, cap = StrokeCap.Round, join = StrokeJoin.Round))
                 }
-                Spacer(Modifier.width(12.dp))
-                Text("Settings", fontSize = 26.sp, fontWeight = FontWeight.Bold, color = pal.hi)
             }
-            Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = 12.dp)) {
-                Text("Rule changes apply from the next game.", color = pal.sub, fontSize = 13.sp, modifier = Modifier.padding(start = 8.dp))
-                SettingsList(pal, pf, sysPal)
-                Spacer(Modifier.height(32.dp))
-            }
+            Spacer(Modifier.width(12.dp))
+            Text("Settings", fontSize = 26.sp, fontWeight = FontWeight.Bold, color = pal.hi)
+        }
+        Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = 12.dp)) {
+            Text("Rule changes apply from the next game.", color = pal.sub, fontSize = 13.sp, modifier = Modifier.padding(start = 8.dp))
+            SettingsList(pal, pf, sysPal)
+            Spacer(Modifier.height(32.dp))
         }
     }
 }
@@ -1074,14 +1096,17 @@ fun SliderRow(pal: Pal, title: String, valueText: String, value: Int, onChange: 
             Text(valueText, color = pal.hi)
         }
         Spacer(Modifier.height(10.dp))
-        // One UI style slider: thick rounded pill, accent fill, slim white handle
+        // One UI style slider: thick rounded pill with a subtle gradient accent fill, no handle
         Slider(
             value = value.toFloat(), onValueChange = { onChange(it.roundToInt()) }, valueRange = 0f..100f,
-            thumb = { Box(Modifier.size(width = 5.dp, height = 22.dp).clip(CircleShape).background(Color.White)) },
+            thumb = { Spacer(Modifier.size(width = 1.dp, height = 40.dp)) },
             track = { st ->
                 val frac = (st.value - st.valueRange.start) / (st.valueRange.endInclusive - st.valueRange.start)
                 Box(Modifier.fillMaxWidth().height(40.dp).clip(RoundedCornerShape(20.dp)).background(pal.text.copy(alpha = 0.12f))) {
-                    Box(Modifier.fillMaxWidth(frac.coerceIn(0f, 1f)).fillMaxHeight().background(pal.acc))
+                    Box(
+                        Modifier.fillMaxWidth(frac.coerceIn(0f, 1f)).fillMaxHeight().clip(RoundedCornerShape(20.dp))
+                            .background(Brush.horizontalGradient(listOf(pal.acc.copy(alpha = 0.6f), pal.acc)))
+                    )
                 }
             }
         )
