@@ -398,32 +398,10 @@ fun Home(
         focusedIndicatorColor = Color.Transparent, unfocusedIndicatorColor = Color.Transparent
     )
     // One-hand mode: expandable app bar (expanded = 39.67% of screen height per the One UI guidelines)
-    val density = LocalDensity.current
-    val sh = LocalConfiguration.current.screenHeightDp
-    val maxPull = with(density) { (sh * 0.3967f - 150f).coerceAtLeast(60f).dp.toPx() }
-    var pullPx by remember { mutableFloatStateOf(0f) }
-    val conn = remember(maxPull) {
-        object : NestedScrollConnection {
-            override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
-                if (available.y < 0f && pullPx > 0f) {
-                    val nv = (pullPx + available.y).coerceAtLeast(0f); val used = nv - pullPx; pullPx = nv
-                    return Offset(0f, used)
-                }
-                return Offset.Zero
-            }
-            override fun onPostScroll(consumed: Offset, available: Offset, source: NestedScrollSource): Offset {
-                if (available.y > 0f && source == NestedScrollSource.Drag) {
-                    pullPx = (pullPx + available.y).coerceAtMost(maxPull)
-                    return Offset(0f, available.y)
-                }
-                return Offset.Zero
-            }
-            override suspend fun onPostFling(consumed: Velocity, available: Velocity): Velocity {
-                animate(pullPx, if (pullPx > maxPull * 0.35f) maxPull else 0f, animationSpec = spring(dampingRatio = 0.8f, stiffness = 300f)) { v, _ -> pullPx = v }
-                return Velocity.Zero
-            }
-        }
-    }
+    val pullState = rememberPull()
+    val maxPull = pullState.maxPull
+    val conn = pullState.conn
+    val pullPx = pullState.px
     val contentLayer = rememberGraphicsLayer()
     var contentPos by remember { mutableStateOf(Offset.Zero) }
     var pillPos by remember { mutableStateOf(Offset.Zero) }
@@ -1031,47 +1009,79 @@ fun SettingsList(pal: Pal, pf: Prefs, sysPal: List<Color>) {
                 }
 }
 
+/** One-handed mode state: pulling the page down expands the app bar to 39.67% of the screen height (One UI). */
+class PullState(val maxPull: Float) {
+    var px by mutableFloatStateOf(0f)
+    val conn = object : NestedScrollConnection {
+        override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
+            if (available.y < 0f && px > 0f) {
+                val nv = (px + available.y).coerceAtLeast(0f); val used = nv - px; px = nv
+                return Offset(0f, used)
+            }
+            return Offset.Zero
+        }
+        override fun onPostScroll(consumed: Offset, available: Offset, source: NestedScrollSource): Offset {
+            if (available.y > 0f && source == NestedScrollSource.Drag) {
+                px = (px + available.y).coerceAtMost(maxPull)
+                return Offset(0f, available.y)
+            }
+            return Offset.Zero
+        }
+        override suspend fun onPostFling(consumed: Velocity, available: Velocity): Velocity {
+            animate(px, if (px > maxPull * 0.35f) maxPull else 0f, animationSpec = spring(dampingRatio = 0.8f, stiffness = 300f)) { v, _ -> px = v }
+            return Velocity.Zero
+        }
+    }
+}
+
+@Composable
+fun rememberPull(): PullState {
+    val density = LocalDensity.current
+    val sh = LocalConfiguration.current.screenHeightDp
+    val maxPull = with(density) { (sh * 0.3967f - 150f).coerceAtLeast(60f).dp.toPx() }
+    return remember(maxPull) { PullState(maxPull) }
+}
+
 /**
- * Full-screen settings opened from the pause menu. Predictive back: the page only slides sideways
- * (no fade or scale), up to half the screen while the gesture is held, and finishes sliding off on release.
+ * Full-screen settings opened from the pause menu, with the same one-handed mode as the main settings.
+ * Predictive back: the page only slides to the right (no fade or scale), up to half the screen while the
+ * gesture is held, and finishes sliding off on release.
  */
 @Composable
 fun SettingsSheet(pal: Pal, pf: Prefs, sysPal: List<Color>, onClose: () -> Unit) {
     val slide = remember { Animatable(0f) }   // fraction of the screen width the page has moved
-    var dir by remember { mutableFloatStateOf(1f) }
     val scope = rememberCoroutineScope()
+    val pull = rememberPull()
     PredictiveBackHandler { flow ->
         try {
-            flow.collect { ev ->
-                dir = if (ev.swipeEdge == BackEventCompat.EDGE_RIGHT) -1f else 1f
-                slide.snapTo(0.5f * ev.progress)
-            }
+            flow.collect { ev -> slide.snapTo(0.5f * ev.progress) }
             slide.animateTo(1f, tween(220, easing = FastOutLinearInEasing))
             onClose()
         } catch (e: CancellationException) {
             scope.launch { slide.animateTo(0f, spring(dampingRatio = 0.85f, stiffness = 400f)) }
         }
     }
-    Column(
+    Box(
         Modifier.fillMaxSize()
-            .graphicsLayer { translationX = dir * slide.value * size.width }
+            .graphicsLayer { translationX = slide.value * size.width }
             .background(pal.bg).pointerInput(Unit) { detectTapGestures { } }
     ) {
-        Row(Modifier.padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-            Box(Modifier.size(44.dp).clip(CircleShape).background(pal.surf).clickable(onClick = onClose), contentAlignment = Alignment.Center) {
-                Canvas(Modifier.size(18.dp)) {
-                    drawPath(Path().apply {
-                        moveTo(size.width * .65f, size.height * .1f); lineTo(size.width * .3f, size.height * .5f); lineTo(size.width * .65f, size.height * .9f)
-                    }, pal.text, style = Stroke(size.width * .12f, cap = StrokeCap.Round, join = StrokeJoin.Round))
-                }
-            }
-            Spacer(Modifier.width(12.dp))
-            Text("Settings", fontSize = 26.sp, fontWeight = FontWeight.Bold, color = pal.hi)
-        }
-        Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = 12.dp)) {
+        Column(Modifier.fillMaxSize().nestedScroll(pull.conn).verticalScroll(rememberScrollState()).padding(horizontal = 12.dp)) {
+            PullHeader("Settings", "", pal, pull.px, pull.maxPull)
             Text("Rule changes apply from the next game.", color = pal.sub, fontSize = 13.sp, modifier = Modifier.padding(start = 8.dp))
             SettingsList(pal, pf, sysPal)
             Spacer(Modifier.height(32.dp))
+        }
+        Box(
+            Modifier.align(Alignment.TopStart).padding(start = 16.dp, top = 12.dp).size(44.dp).clip(CircleShape)
+                .background(pal.surf).clickable(onClick = onClose),
+            contentAlignment = Alignment.Center
+        ) {
+            Canvas(Modifier.size(18.dp)) {
+                drawPath(Path().apply {
+                    moveTo(size.width * .65f, size.height * .1f); lineTo(size.width * .3f, size.height * .5f); lineTo(size.width * .65f, size.height * .9f)
+                }, pal.text, style = Stroke(size.width * .12f, cap = StrokeCap.Round, join = StrokeJoin.Round))
+            }
         }
     }
 }
